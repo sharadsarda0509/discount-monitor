@@ -52,37 +52,76 @@ def extract_discount(html_content):
     
     soup = BeautifulSoup(html_content, 'html.parser')
     
-    # Method 1: Look for percentage text
+    # Method 1: Look for percentage text in page content
     discount_patterns = [
         r'(\d+(?:\.\d+)?)\s*%\s*OFF',
         r'(\d+(?:\.\d+)?)\s*%\s*off',
-        r'(\d+(?:\.\d+)?)\s*% OFF'
+        r'(\d+(?:\.\d+)?)\s*%\s*discount',
+        r'(\d+(?:\.\d+)?)\s*%',
+        r'discount[:\s]+(\d+(?:\.\d+)?)',
     ]
     
+    # Search through all text content
+    page_text = soup.get_text()
+    print(f"[{datetime.now()}] Searching for discount patterns in page text...")
+    
     for pattern in discount_patterns:
-        matches = soup.find_all(text=re.compile(pattern))
+        result = re.search(pattern, page_text, re.IGNORECASE)
+        if result:
+            discount = float(result.group(1))
+            print(f"[{datetime.now()}] Found discount using pattern '{pattern}': {discount}%")
+            return discount
+    
+    # Method 2: Look in specific HTML elements (using 'string' instead of deprecated 'text')
+    for pattern in discount_patterns:
+        matches = soup.find_all(string=re.compile(pattern, re.IGNORECASE))
         for match in matches:
-            result = re.search(pattern, str(match))
+            result = re.search(pattern, str(match), re.IGNORECASE)
             if result:
                 discount = float(result.group(1))
-                print(f"[{datetime.now()}] Found discount: {discount}%")
+                print(f"[{datetime.now()}] Found discount in element: {discount}%")
                 return discount
     
-    # Method 2: Calculate from price
+    # Method 3: Calculate from price
     try:
-        # Look for price elements
-        price_elements = soup.find_all(text=re.compile(r'₹\s*\d+'))
+        # Look for price elements (using 'string' instead of deprecated 'text')
+        price_elements = soup.find_all(string=re.compile(r'₹\s*[\d,]+'))
+        print(f"[{datetime.now()}] Found {len(price_elements)} price elements")
+        
         if len(price_elements) >= 2:
-            current_price = float(re.search(r'\d+', price_elements[0]).group())
-            original_price = float(re.search(r'\d+', price_elements[1]).group())
-            if original_price > current_price:
-                discount = ((original_price - current_price) / original_price) * 100
-                print(f"[{datetime.now()}] Calculated discount: {discount:.2f}%")
-                return round(discount, 2)
+            # Extract numeric values, removing commas
+            prices = []
+            for elem in price_elements[:5]:  # Check first 5 price elements
+                match = re.search(r'₹\s*([\d,]+)', str(elem))
+                if match:
+                    price_str = match.group(1).replace(',', '')
+                    prices.append(float(price_str))
+            
+            print(f"[{datetime.now()}] Extracted prices: {prices}")
+            
+            if len(prices) >= 2:
+                # Assume first is current price, find original price (should be higher)
+                for i in range(1, len(prices)):
+                    if prices[i] > prices[0]:
+                        current_price = prices[0]
+                        original_price = prices[i]
+                        discount = ((original_price - current_price) / original_price) * 100
+                        print(f"[{datetime.now()}] Calculated discount: {discount:.2f}% (₹{current_price} vs ₹{original_price})")
+                        return round(discount, 2)
     except Exception as e:
         print(f"[{datetime.now()}] Could not calculate discount from prices: {e}")
     
+    # Method 4: Look for discount in meta tags or JSON-LD
+    try:
+        meta_tags = soup.find_all('meta', attrs={'property': re.compile('price|discount', re.IGNORECASE)})
+        for tag in meta_tags:
+            content = tag.get('content', '')
+            print(f"[{datetime.now()}] Meta tag content: {content}")
+    except Exception as e:
+        print(f"[{datetime.now()}] Could not check meta tags: {e}")
+    
     print(f"[{datetime.now()}] No discount found on page")
+    print(f"[{datetime.now()}] Page text sample (first 500 chars): {page_text[:500]}")
     return None
 
 
