@@ -15,114 +15,70 @@ import re
 
 try:
     import requests
-    from bs4 import BeautifulSoup
 except ImportError:
     print("Error: Required packages not installed. Run: pip install -r requirements.txt")
     sys.exit(1)
 
 
 # Configuration
-URL = "https://store.oneplay.in/view/flipkart-e-gift-voucher-inr-10000-0242469b-dc1c-11f0-a1d3-0636a7656735"
+PRODUCT_ID = "0242469b-dc1c-11f0-a1d3-0636a7656735"
+PRODUCT_URL = f"https://store.oneplay.in/view/flipkart-e-gift-voucher-inr-10000-{PRODUCT_ID}"
+API_URL = f"https://commerce-services.oneplay.in/v1/content/details/info/{PRODUCT_ID}"
 TARGET_DISCOUNT = 2.0
 
 
-def fetch_page_content():
-    """Fetch the webpage content"""
+def fetch_product_data():
+    """Fetch product data from OnePlay API"""
     headers = {
         'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-        'Accept-Language': 'en-US,en;q=0.9',
+        'Accept': 'application/json',
+        'Content-Type': 'application/json',
+        'Origin': 'https://store.oneplay.in',
+        'Referer': PRODUCT_URL,
     }
     
     try:
-        print(f"[{datetime.now()}] Fetching URL: {URL}")
-        response = requests.get(URL, headers=headers, timeout=30)
+        print(f"[{datetime.now()}] Fetching product data from API...")
+        response = requests.post(API_URL, headers=headers, json={}, timeout=30)
         response.raise_for_status()
-        print(f"[{datetime.now()}] Successfully fetched page (Status: {response.status_code})")
-        return response.text
+        print(f"[{datetime.now()}] Successfully fetched data (Status: {response.status_code})")
+        return response.json()
     except requests.RequestException as e:
-        print(f"[{datetime.now()}] Error fetching page: {e}")
+        print(f"[{datetime.now()}] Error fetching data: {e}")
         return None
 
 
-def extract_discount(html_content):
-    """Extract discount percentage from HTML"""
-    if not html_content:
-        return None
+def extract_discount(product_data):
+    """Extract discount percentage and price from API response"""
+    if not product_data:
+        return None, None
     
-    soup = BeautifulSoup(html_content, 'html.parser')
-    
-    # Method 1: Look for percentage text in page content
-    discount_patterns = [
-        r'(\d+(?:\.\d+)?)\s*%\s*OFF',
-        r'(\d+(?:\.\d+)?)\s*%\s*off',
-        r'(\d+(?:\.\d+)?)\s*%\s*discount',
-        r'(\d+(?:\.\d+)?)\s*%',
-        r'discount[:\s]+(\d+(?:\.\d+)?)',
-    ]
-    
-    # Search through all text content
-    page_text = soup.get_text()
-    print(f"[{datetime.now()}] Searching for discount patterns in page text...")
-    
-    for pattern in discount_patterns:
-        result = re.search(pattern, page_text, re.IGNORECASE)
-        if result:
-            discount = float(result.group(1))
-            print(f"[{datetime.now()}] Found discount using pattern '{pattern}': {discount}%")
-            return discount
-    
-    # Method 2: Look in specific HTML elements (using 'string' instead of deprecated 'text')
-    for pattern in discount_patterns:
-        matches = soup.find_all(string=re.compile(pattern, re.IGNORECASE))
-        for match in matches:
-            result = re.search(pattern, str(match), re.IGNORECASE)
-            if result:
-                discount = float(result.group(1))
-                print(f"[{datetime.now()}] Found discount in element: {discount}%")
-                return discount
-    
-    # Method 3: Calculate from price
     try:
-        # Look for price elements (using 'string' instead of deprecated 'text')
-        price_elements = soup.find_all(string=re.compile(r'₹\s*[\d,]+'))
-        print(f"[{datetime.now()}] Found {len(price_elements)} price elements")
+        # Navigate through the JSON structure
+        response = product_data.get('response', {})
+        info = response.get('info', {})
         
-        if len(price_elements) >= 2:
-            # Extract numeric values, removing commas
-            prices = []
-            for elem in price_elements[:5]:  # Check first 5 price elements
-                match = re.search(r'₹\s*([\d,]+)', str(elem))
-                if match:
-                    price_str = match.group(1).replace(',', '')
-                    prices.append(float(price_str))
+        # Extract data
+        product_name = info.get('title', 'Unknown')
+        discount = info.get('discount_percentage', 0)
+        current_price = info.get('best_buy_price', 0)
+        original_price = info.get('best_display_price', 0)
+        
+        print(f"[{datetime.now()}] Product: {product_name}")
+        print(f"[{datetime.now()}] Current Price: ₹{current_price}")
+        print(f"[{datetime.now()}] Original Price: ₹{original_price}")
+        print(f"[{datetime.now()}] Discount: {discount}%")
+        
+        if discount > 0 and current_price > 0:
+            return float(discount), int(current_price)
+        else:
+            print(f"[{datetime.now()}] No discount available")
+            return None, None
             
-            print(f"[{datetime.now()}] Extracted prices: {prices}")
-            
-            if len(prices) >= 2:
-                # Assume first is current price, find original price (should be higher)
-                for i in range(1, len(prices)):
-                    if prices[i] > prices[0]:
-                        current_price = prices[0]
-                        original_price = prices[i]
-                        discount = ((original_price - current_price) / original_price) * 100
-                        print(f"[{datetime.now()}] Calculated discount: {discount:.2f}% (₹{current_price} vs ₹{original_price})")
-                        return round(discount, 2)
     except Exception as e:
-        print(f"[{datetime.now()}] Could not calculate discount from prices: {e}")
-    
-    # Method 4: Look for discount in meta tags or JSON-LD
-    try:
-        meta_tags = soup.find_all('meta', attrs={'property': re.compile('price|discount', re.IGNORECASE)})
-        for tag in meta_tags:
-            content = tag.get('content', '')
-            print(f"[{datetime.now()}] Meta tag content: {content}")
-    except Exception as e:
-        print(f"[{datetime.now()}] Could not check meta tags: {e}")
-    
-    print(f"[{datetime.now()}] No discount found on page")
-    print(f"[{datetime.now()}] Page text sample (first 500 chars): {page_text[:500]}")
-    return None
+        print(f"[{datetime.now()}] Error parsing product data: {e}")
+        print(f"[{datetime.now()}] Raw data sample: {str(product_data)[:500]}")
+        return None, None
 
 
 def send_email_alert(discount, current_price=None):
@@ -148,7 +104,7 @@ The Flipkart E-Gift Voucher INR 10000 has reached {discount}% OFF!
 
 {f'Current Price: ₹{current_price}' if current_price else 'Check the link for current price'}
 
-🔗 Link: {URL}
+🔗 Link: {PRODUCT_URL}
 
 ⏰ Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S IST')}
 
@@ -171,7 +127,7 @@ This is an automated alert from your Flipkart Discount Monitor.
         {f'<p style="font-size: 18px;"><strong>Current Price:</strong> <span style="color: #388e3c;">₹{current_price}</span></p>' if current_price else ''}
         
         <p style="margin: 20px 0;">
-          <a href="{URL}" 
+          <a href="{PRODUCT_URL}" 
              style="display: inline-block; padding: 12px 24px; background-color: #2874f0; 
                     color: white; text-decoration: none; border-radius: 5px; font-weight: bold;">
             Buy Now on OnePlay Store
@@ -212,12 +168,12 @@ def check_discount():
     print(f"Flipkart Discount Monitor - Run at {datetime.now()}")
     print("=" * 60)
     
-    html_content = fetch_page_content()
-    if not html_content:
-        print(f"[{datetime.now()}] Failed to fetch page content")
+    product_data = fetch_product_data()
+    if not product_data:
+        print(f"[{datetime.now()}] Failed to fetch product data")
         return False
     
-    discount = extract_discount(html_content)
+    discount, current_price = extract_discount(product_data)
     
     if discount is None:
         print(f"[{datetime.now()}] Could not extract discount information")
@@ -227,7 +183,7 @@ def check_discount():
     
     if discount >= TARGET_DISCOUNT:
         print(f"[{datetime.now()}] 🎯 Target discount reached! Sending alert...")
-        success = send_email_alert(discount)
+        success = send_email_alert(discount, current_price)
         if success:
             # Save state to avoid duplicate alerts
             state_file = os.path.join(os.path.dirname(__file__), 'last_alert.json')
@@ -236,7 +192,8 @@ def check_discount():
                     json.dump({
                         'timestamp': datetime.now().isoformat(),
                         'discount': discount,
-                        'url': URL
+                        'current_price': current_price,
+                        'url': PRODUCT_URL
                     }, f)
             except Exception as e:
                 print(f"[{datetime.now()}] Warning: Could not save state: {e}")
