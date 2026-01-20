@@ -2,8 +2,8 @@ name: Flipkart Discount Monitor
 
 on:
   schedule:
-    # Runs every 30 minutes
-    - cron: '*/30 * * * *'
+    # Runs every 2 hours
+    - cron: '0 */2 * * *'
   
   # Allow manual trigger
   workflow_dispatch:
