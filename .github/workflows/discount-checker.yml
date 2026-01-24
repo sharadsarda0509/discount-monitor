@@ -1,4 +1,4 @@
-name: Flipkart Discount Monitor
+name: Discount & Offers Monitor
 
 on:
   schedule:
@@ -34,6 +34,14 @@ jobs:
           EMAIL_PASSWORD: ${{ secrets.EMAIL_PASSWORD }}
         run: |
           python check_discount.py
+      
+      - name: Check NoOnes P2P offers
+        env:
+          SENDER_EMAIL: ${{ secrets.SENDER_EMAIL }}
+          RECEIVER_EMAIL: ${{ secrets.RECEIVER_EMAIL }}
+          EMAIL_PASSWORD: ${{ secrets.EMAIL_PASSWORD }}
+        run: |
+          python check_noones.py
       
       - name: Upload logs (if failed)
         if: failure()

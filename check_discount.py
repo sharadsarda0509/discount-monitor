@@ -10,8 +10,16 @@ import json
 import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 import re
+
+# IST timezone (UTC+5:30)
+IST = timezone(timedelta(hours=5, minutes=30))
+
+
+def get_ist_now():
+    """Get current time in IST"""
+    return datetime.now(IST)
 
 try:
     import requests
@@ -96,6 +104,9 @@ def send_email_alert(discount, current_price=None):
     message["To"] = receiver_email
     message["Subject"] = f"🎉 Flipkart Voucher Alert: {discount}% OFF Available!"
     
+    # Get current IST time for email
+    ist_time = get_ist_now().strftime('%Y-%m-%d %H:%M:%S IST')
+    
     # Create plain text and HTML versions
     text_body = f"""
 Discount Alert!
@@ -106,7 +117,7 @@ The Flipkart E-Gift Voucher INR 10000 has reached {discount}% OFF!
 
 🔗 Link: {PRODUCT_URL}
 
-⏰ Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S IST')}
+⏰ Time: {ist_time}
 
 ---
 This is an automated alert from your Flipkart Discount Monitor.
@@ -136,7 +147,7 @@ This is an automated alert from your Flipkart Discount Monitor.
       </div>
       
       <p style="font-size: 12px; color: #666; margin-top: 20px;">
-        ⏰ Alert triggered at: {datetime.now().strftime('%Y-%m-%d %H:%M:%S IST')}<br>
+        ⏰ Alert triggered at: {ist_time}<br>
         <em>This is an automated alert from your Flipkart Discount Monitor.</em>
       </p>
     </div>
