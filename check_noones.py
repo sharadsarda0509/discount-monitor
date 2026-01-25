@@ -91,6 +91,9 @@ BLOCKED_TRADERS = [
     "BTCLIFE",
 ]
 
+# ntfy.sh configuration
+NTFY_TOPIC = os.environ.get('NTFY_TOPIC', '')
+
 
 def fetch_offers():
     """Fetch P2P offers from NoOnes API"""
@@ -182,6 +185,42 @@ def filter_offers(offers_data):
     except Exception as e:
         print(f"[{datetime.now()}] Error parsing offers: {e}")
         return []
+
+
+def send_ntfy_alert(matching_offers):
+    """Send push notification via ntfy.sh"""
+    if not NTFY_TOPIC:
+        print(f"[{get_ist_now()}] ntfy.sh not configured (NTFY_TOPIC not set)")
+        return False
+    
+    try:
+        best_offer = max(matching_offers, key=lambda x: x['margin'])
+        
+        title = f"🚀 NoOnes: {best_offer['margin']}% Margin!"
+        message = f"Found {len(matching_offers)} offer(s) from India with ≥{TARGET_MARGIN}% margin\n\n"
+        
+        for offer in sorted(matching_offers, key=lambda x: x['margin'], reverse=True)[:3]:
+            message += f"• {offer['trader']}: {offer['margin']}%\n"
+        
+        message += f"\n{NOONES_URL}"
+        
+        response = requests.post(
+            f"https://ntfy.sh/{NTFY_TOPIC}",
+            data=message.encode('utf-8'),
+            headers={
+                "Title": title,
+                "Priority": "high",
+                "Tags": "rocket,bitcoin",
+                "Click": NOONES_URL,
+            },
+            timeout=10
+        )
+        response.raise_for_status()
+        print(f"[{get_ist_now()}] ✅ ntfy.sh notification sent!")
+        return True
+    except Exception as e:
+        print(f"[{get_ist_now()}] ❌ Failed to send ntfy notification: {e}")
+        return False
 
 
 def send_email_alert(matching_offers):
@@ -314,11 +353,17 @@ def check_noones():
     if not should_send_alert('noones'):
         return False
     
-    print(f"[{get_ist_now()}] Sending alert...")
-    success = send_email_alert(matching_offers)
-    if success:
+    print(f"[{get_ist_now()}] Sending alerts...")
+    
+    # Send both ntfy and email notifications
+    ntfy_success = send_ntfy_alert(matching_offers)
+    email_success = send_email_alert(matching_offers)
+    
+    # Record alert if at least one notification succeeded
+    if ntfy_success or email_success:
         record_alert('noones')
-    return success
+    
+    return ntfy_success or email_success
 
 
 if __name__ == "__main__":

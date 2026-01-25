@@ -86,6 +86,9 @@ PRODUCT_URL = f"https://store.oneplay.in/view/flipkart-e-gift-voucher-inr-10000-
 API_URL = f"https://commerce-services.oneplay.in/v1/content/details/info/{PRODUCT_ID}"
 TARGET_DISCOUNT = 2.0
 
+# ntfy.sh configuration
+NTFY_TOPIC = os.environ.get('NTFY_TOPIC', '')
+
 
 def fetch_product_data():
     """Fetch product data from OnePlay API"""
@@ -139,6 +142,38 @@ def extract_discount(product_data):
         print(f"[{datetime.now()}] Error parsing product data: {e}")
         print(f"[{datetime.now()}] Raw data sample: {str(product_data)[:500]}")
         return None, None
+
+
+def send_ntfy_alert(discount, current_price=None):
+    """Send push notification via ntfy.sh"""
+    if not NTFY_TOPIC:
+        print(f"[{get_ist_now()}] ntfy.sh not configured (NTFY_TOPIC not set)")
+        return False
+    
+    try:
+        title = f"🎉 Flipkart: {discount}% OFF!"
+        message = f"Flipkart E-Gift Voucher ₹10000 is now {discount}% OFF"
+        if current_price:
+            message += f"\nPrice: ₹{current_price}"
+        message += f"\n\n{PRODUCT_URL}"
+        
+        response = requests.post(
+            f"https://ntfy.sh/{NTFY_TOPIC}",
+            data=message.encode('utf-8'),
+            headers={
+                "Title": title,
+                "Priority": "high",
+                "Tags": "tada,shopping",
+                "Click": PRODUCT_URL,
+            },
+            timeout=10
+        )
+        response.raise_for_status()
+        print(f"[{get_ist_now()}] ✅ ntfy.sh notification sent!")
+        return True
+    except Exception as e:
+        print(f"[{get_ist_now()}] ❌ Failed to send ntfy notification: {e}")
+        return False
 
 
 def send_email_alert(discount, current_price=None):
@@ -251,11 +286,17 @@ def check_discount():
         if not should_send_alert('flipkart'):
             return False
         
-        print(f"[{get_ist_now()}] Sending alert...")
-        success = send_email_alert(discount, current_price)
-        if success:
+        print(f"[{get_ist_now()}] Sending alerts...")
+        
+        # Send both ntfy and email notifications
+        ntfy_success = send_ntfy_alert(discount, current_price)
+        email_success = send_email_alert(discount, current_price)
+        
+        # Record alert if at least one notification succeeded
+        if ntfy_success or email_success:
             record_alert('flipkart')
-        return success
+        
+        return ntfy_success or email_success
     else:
         print(f"[{get_ist_now()}] Target not reached yet. Waiting...")
         return False
