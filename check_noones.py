@@ -196,11 +196,11 @@ def send_ntfy_alert(matching_offers):
     try:
         best_offer = max(matching_offers, key=lambda x: x['margin'])
         
-        title = f"🚀 NoOnes: {best_offer['margin']}% Margin!"
-        message = f"Found {len(matching_offers)} offer(s) from India with ≥{TARGET_MARGIN}% margin\n\n"
+        title = f"NoOnes: {best_offer['margin']}% Margin!"
+        message = f"Found {len(matching_offers)} offer(s) from India with >={TARGET_MARGIN}% margin\n\n"
         
         for offer in sorted(matching_offers, key=lambda x: x['margin'], reverse=True)[:3]:
-            message += f"• {offer['trader']}: {offer['margin']}%\n"
+            message += f"- {offer['trader']}: {offer['margin']}%\n"
         
         message += f"\n{NOONES_URL}"
         
@@ -210,7 +210,7 @@ def send_ntfy_alert(matching_offers):
             headers={
                 "Title": title,
                 "Priority": "high",
-                "Tags": "rocket,bitcoin",
+                "Tags": "rocket,moneybag",
                 "Click": NOONES_URL,
             },
             timeout=10

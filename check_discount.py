@@ -151,10 +151,10 @@ def send_ntfy_alert(discount, current_price=None):
         return False
     
     try:
-        title = f"🎉 Flipkart: {discount}% OFF!"
-        message = f"Flipkart E-Gift Voucher ₹10000 is now {discount}% OFF"
+        title = f"Flipkart: {discount}% OFF!"
+        message = f"Flipkart E-Gift Voucher Rs.10000 is now {discount}% OFF"
         if current_price:
-            message += f"\nPrice: ₹{current_price}"
+            message += f"\nPrice: Rs.{current_price}"
         message += f"\n\n{PRODUCT_URL}"
         
         response = requests.post(
