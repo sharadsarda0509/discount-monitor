@@ -2,8 +2,8 @@ name: Discount & Offers Monitor
 
 on:
   schedule:
-    # Runs every 2 hours
-    - cron: '0 */2 * * *'
+    # Runs every 45 minutes
+    - cron: '*/45 * * * *'
   
   # Allow manual trigger
   workflow_dispatch:
@@ -27,11 +27,20 @@ jobs:
           pip install --upgrade pip
           pip install -r requirements.txt
       
+      - name: Restore alert state cache
+        uses: actions/cache@v4
+        with:
+          path: .alert_state
+          key: alert-state-${{ github.run_id }}
+          restore-keys: |
+            alert-state-
+      
       - name: Check Flipkart discount
         env:
           SENDER_EMAIL: ${{ secrets.SENDER_EMAIL }}
           RECEIVER_EMAIL: ${{ secrets.RECEIVER_EMAIL }}
           EMAIL_PASSWORD: ${{ secrets.EMAIL_PASSWORD }}
+          ALERT_COOLDOWN_HOURS: "24"
         run: |
           python check_discount.py
       
@@ -40,6 +49,7 @@ jobs:
           SENDER_EMAIL: ${{ secrets.SENDER_EMAIL }}
           RECEIVER_EMAIL: ${{ secrets.RECEIVER_EMAIL }}
           EMAIL_PASSWORD: ${{ secrets.EMAIL_PASSWORD }}
+          ALERT_COOLDOWN_HOURS: "24"
         run: |
           python check_noones.py
       
@@ -50,6 +60,5 @@ jobs:
           name: error-logs
           path: |
             *.log
-            last_alert.json
+            .alert_state/
           retention-days: 7
-

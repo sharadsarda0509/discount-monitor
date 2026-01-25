@@ -11,15 +11,67 @@ import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from datetime import datetime, timezone, timedelta
+from pathlib import Path
 import re
 
 # IST timezone (UTC+5:30)
 IST = timezone(timedelta(hours=5, minutes=30))
 
+# Alert cooldown configuration
+COOLDOWN_HOURS = int(os.environ.get('ALERT_COOLDOWN_HOURS', 24))
+STATE_DIR = Path('.alert_state')
+STATE_FILE = STATE_DIR / 'last_alert.json'
+
 
 def get_ist_now():
     """Get current time in IST"""
     return datetime.now(IST)
+
+
+def should_send_alert(alert_type: str) -> bool:
+    """Check if enough time has passed since last alert of this type"""
+    STATE_DIR.mkdir(exist_ok=True)
+    
+    if not STATE_FILE.exists():
+        return True
+    
+    try:
+        state = json.loads(STATE_FILE.read_text())
+        last_alert = state.get(alert_type)
+        if not last_alert:
+            return True
+        
+        # Parse the ISO format timestamp
+        last_time = datetime.fromisoformat(last_alert)
+        # Make sure we're comparing timezone-aware datetimes
+        if last_time.tzinfo is None:
+            last_time = last_time.replace(tzinfo=IST)
+        
+        elapsed = get_ist_now() - last_time
+        elapsed_hours = elapsed.total_seconds() / 3600
+        
+        if elapsed_hours < COOLDOWN_HOURS:
+            print(f"[{get_ist_now()}] ⏳ Cooldown active for {alert_type}: {elapsed_hours:.1f}h elapsed, need {COOLDOWN_HOURS}h")
+            return False
+        return True
+    except Exception as e:
+        print(f"[{get_ist_now()}] Warning: Could not read state file: {e}")
+        return True
+
+
+def record_alert(alert_type: str):
+    """Record that an alert was sent"""
+    STATE_DIR.mkdir(exist_ok=True)
+    
+    state = {}
+    if STATE_FILE.exists():
+        try:
+            state = json.loads(STATE_FILE.read_text())
+        except Exception:
+            pass
+    
+    state[alert_type] = get_ist_now().isoformat()
+    STATE_FILE.write_text(json.dumps(state, indent=2))
 
 try:
     import requests
@@ -193,24 +245,19 @@ def check_discount():
     print(f"[{datetime.now()}] Current discount: {discount}% | Target: {TARGET_DISCOUNT}%")
     
     if discount >= TARGET_DISCOUNT:
-        print(f"[{datetime.now()}] 🎯 Target discount reached! Sending alert...")
+        print(f"[{get_ist_now()}] 🎯 Target discount reached!")
+        
+        # Check cooldown before sending
+        if not should_send_alert('flipkart'):
+            return False
+        
+        print(f"[{get_ist_now()}] Sending alert...")
         success = send_email_alert(discount, current_price)
         if success:
-            # Save state to avoid duplicate alerts
-            state_file = os.path.join(os.path.dirname(__file__), 'last_alert.json')
-            try:
-                with open(state_file, 'w') as f:
-                    json.dump({
-                        'timestamp': datetime.now().isoformat(),
-                        'discount': discount,
-                        'current_price': current_price,
-                        'url': PRODUCT_URL
-                    }, f)
-            except Exception as e:
-                print(f"[{datetime.now()}] Warning: Could not save state: {e}")
+            record_alert('flipkart')
         return success
     else:
-        print(f"[{datetime.now()}] Target not reached yet. Waiting...")
+        print(f"[{get_ist_now()}] Target not reached yet. Waiting...")
         return False
 
 

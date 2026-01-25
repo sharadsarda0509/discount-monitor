@@ -7,18 +7,71 @@ Sends email alert when margin is >= 5%
 
 import os
 import sys
+import json
 import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from datetime import datetime, timezone, timedelta
+from pathlib import Path
 
 # IST timezone (UTC+5:30)
 IST = timezone(timedelta(hours=5, minutes=30))
+
+# Alert cooldown configuration
+COOLDOWN_HOURS = int(os.environ.get('ALERT_COOLDOWN_HOURS', 24))
+STATE_DIR = Path('.alert_state')
+STATE_FILE = STATE_DIR / 'last_alert.json'
 
 
 def get_ist_now():
     """Get current time in IST"""
     return datetime.now(IST)
+
+
+def should_send_alert(alert_type: str) -> bool:
+    """Check if enough time has passed since last alert of this type"""
+    STATE_DIR.mkdir(exist_ok=True)
+    
+    if not STATE_FILE.exists():
+        return True
+    
+    try:
+        state = json.loads(STATE_FILE.read_text())
+        last_alert = state.get(alert_type)
+        if not last_alert:
+            return True
+        
+        # Parse the ISO format timestamp
+        last_time = datetime.fromisoformat(last_alert)
+        # Make sure we're comparing timezone-aware datetimes
+        if last_time.tzinfo is None:
+            last_time = last_time.replace(tzinfo=IST)
+        
+        elapsed = get_ist_now() - last_time
+        elapsed_hours = elapsed.total_seconds() / 3600
+        
+        if elapsed_hours < COOLDOWN_HOURS:
+            print(f"[{get_ist_now()}] ⏳ Cooldown active for {alert_type}: {elapsed_hours:.1f}h elapsed, need {COOLDOWN_HOURS}h")
+            return False
+        return True
+    except Exception as e:
+        print(f"[{get_ist_now()}] Warning: Could not read state file: {e}")
+        return True
+
+
+def record_alert(alert_type: str):
+    """Record that an alert was sent"""
+    STATE_DIR.mkdir(exist_ok=True)
+    
+    state = {}
+    if STATE_FILE.exists():
+        try:
+            state = json.loads(STATE_FILE.read_text())
+        except Exception:
+            pass
+    
+    state[alert_type] = get_ist_now().isoformat()
+    STATE_FILE.write_text(json.dumps(state, indent=2))
 
 try:
     import requests
@@ -252,11 +305,20 @@ def check_noones():
     matching_offers = filter_offers(offers_data)
     
     if not matching_offers:
-        print(f"[{datetime.now()}] No offers from India with margin >= {TARGET_MARGIN}%. Waiting...")
+        print(f"[{get_ist_now()}] No offers from India with margin >= {TARGET_MARGIN}%. Waiting...")
         return False
     
-    print(f"[{datetime.now()}] 🎯 Found {len(matching_offers)} matching offer(s)! Sending alert...")
-    return send_email_alert(matching_offers)
+    print(f"[{get_ist_now()}] 🎯 Found {len(matching_offers)} matching offer(s)!")
+    
+    # Check cooldown before sending
+    if not should_send_alert('noones'):
+        return False
+    
+    print(f"[{get_ist_now()}] Sending alert...")
+    success = send_email_alert(matching_offers)
+    if success:
+        record_alert('noones')
+    return success
 
 
 if __name__ == "__main__":
