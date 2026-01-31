@@ -55,6 +55,16 @@ jobs:
         run: |
           python check_noones.py
       
+      - name: Check Amazon Gift Card price
+        env:
+          SENDER_EMAIL: ${{ secrets.SENDER_EMAIL }}
+          RECEIVER_EMAIL: ${{ secrets.RECEIVER_EMAIL }}
+          EMAIL_PASSWORD: ${{ secrets.EMAIL_PASSWORD }}
+          NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
+          ALERT_COOLDOWN_HOURS: "12"
+        run: |
+          python check_amazon.py
+      
       - name: Upload logs (if failed)
         if: failure()
         uses: actions/upload-artifact@v4
