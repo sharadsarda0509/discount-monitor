@@ -65,6 +65,23 @@ jobs:
         run: |
           python check_amazon.py
       
+      - name: Check Apple iPhone 16 same-day pickup (Saket + Noida / 110017)
+        env:
+          SENDER_EMAIL: ${{ secrets.SENDER_EMAIL }}
+          RECEIVER_EMAIL: ${{ secrets.RECEIVER_EMAIL }}
+          EMAIL_PASSWORD: ${{ secrets.EMAIL_PASSWORD }}
+          NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
+          ALERT_COOLDOWN_HOURS: "12"
+          APPLE_PINCODE: "110017"
+          APPLE_STORE_IDS: "R756,R787"
+          # Default: same-day (daily) pickup only. For a fixed date, set e.g. APPLE_PICKUP_DATES: "20260331".
+          # Optional: Cookie header from browser (after PIN + pickup at Saket or Noida).
+          APPLE_COOKIES: ${{ secrets.APPLE_COOKIES }}
+          APPLE_SAME_DAY_ONLY: "true"
+          APPLE_REQUIRE_SAKET: "true"
+        run: |
+          python check_apple_iphone16.py
+      
       - name: Upload logs (if failed)
         if: failure()
         uses: actions/upload-artifact@v4
