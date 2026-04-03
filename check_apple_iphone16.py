@@ -329,7 +329,8 @@ def check_apple_iphone16():
         print(f"[{get_ist_now()}] No pickup matches (same-day + target store).")
         return False
 
-    print(f"[{get_ist_now()}] Pickup alert: {', '.join(f'{r[\"color\"]} @ {r[\"store_name\"]}' for r in alerts)}")
+    alert_summary = ", ".join(f"{r['color']} @ {r['store_name']}" for r in alerts)
+    print(f"[{get_ist_now()}] Pickup alert: {alert_summary}")
 
     if not should_send_alert("apple_iphone16"):
         return False
