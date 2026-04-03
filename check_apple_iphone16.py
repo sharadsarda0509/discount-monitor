@@ -19,8 +19,17 @@ This monitor only **cares about Apple Saket and Apple Noida** (retail IDs **R756
 **R787**). Other stores are **ignored** and are **not named** in logs so you only see
 pickup data relevant to Saket/Noida. Override IDs with `APPLE_STORE_IDS` if needed.
 
-To get Saket or Noida in the API response, use a Delhi/NCR IP or `APPLE_COOKIES` from
-the browser after choosing PIN + pickup at Saket or Noida — see below.
+**Automation on GitHub Actions / non-India IP**
+
+Apple ties the pickup store to **client IP** and/or **cookies**. There is no public
+parameter to force Saket/Noida on a random server IP.
+
+For **CI**, set GitHub secret `APPLE_COOKIES` (or `APPLE_COOKIES_FILE`, or
+`_INLINE_SESSION_COOKIE` for local runs only) with the `Cookie` header from DevTools
+after opening the buy page with PIN and pickup at Saket or Noida. Refresh when it
+expires (**do not commit real cookies** to a public repo).
+
+Pattern mirrors check_noones.py: fetch → interpret → optional ntfy + email + cooldown.
 
 **Pickup dates:** If `APPLE_PICKUP_DATES` is **not** set, the script does not target a
 specific calendar day. With `APPLE_SAME_DAY_ONLY=true` (default), it only matches
@@ -28,12 +37,8 @@ specific calendar day. With `APPLE_SAME_DAY_ONLY=true` (default), it only matche
 **daily** pickup availability per run. Set `APPLE_PICKUP_DATES` (e.g. `20260331`) when
 you also want alerts for specific future pickup dates.
 
-Pattern mirrors check_noones.py: fetch → interpret → optional ntfy + email + cooldown.
-
-CI (no browser): add GitHub secret `APPLE_COOKIES` with a Cookie header copied from
-DevTools after you set PIN and pick Saket or Noida on the buy page. Without it,
-Apple may resolve a different city from the runner IP — set `APPLE_REQUIRE_SAKET=false`
-only if you accept “today” alerts for whatever store the API returns (not recommended).
+CI: `APPLE_COOKIES` (or file) is usually required so the API sees Saket/Noida on
+GitHub’s egress IP. `APPLE_REQUIRE_SAKET=false` is not recommended.
 """
 
 import os
@@ -47,6 +52,12 @@ from email.mime.multipart import MIMEMultipart
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
+
+try:
+    import requests
+except ImportError:
+    print("Error: pip install -r requirements.txt")
+    sys.exit(1)
 
 IST = timezone(timedelta(hours=5, minutes=30))
 
@@ -111,10 +122,34 @@ def _allowed_store_ids() -> Tuple[str, ...]:
 
 ALLOWED_STORE_IDS: Tuple[str, ...] = _allowed_store_ids()
 
-# Optional: paste Cookie header value from DevTools after opening the buy page,
-# entering PIN 110017, and selecting pickup at Apple Saket (so `as_gloc` / etc.
-# match Delhi). Example: export APPLE_COOKIES='as_dc=...; as_gloc=...; ...'
+# Optional: paste Cookie header from DevTools (Network → any apple.com/in/shop request)
+# captured from the BAG PAGE after adding the iPhone to cart, entering PIN 110017,
+# and selecting Apple Saket (R756) or Noida (R787) as the pickup store.
+# The bag-page flow sets as_loc (Delhi location token), rtsid (selected store), and
+# as_pcts which are the cookies that pin the availability-message API to Delhi stores.
+# Without these, Apple returns the store nearest to the server IP (GitHub Actions = US).
+# IMPORTANT: get cookies from the bag page, NOT just the product page.
 APPLE_COOKIES = os.environ.get("APPLE_COOKIES", "").strip()
+# Optional path to a file containing the same Cookie header (e.g. for CI secrets as file).
+APPLE_COOKIES_FILE = os.environ.get("APPLE_COOKIES_FILE", "").strip()
+
+# Last-resort for unattended local runs: paste full Cookie header string between quotes.
+# Values expire; never commit real cookies to a public repository.
+_INLINE_SESSION_COOKIE = "as_sfa=Mnxpbnxpbnx8ZW5fSU58Y29uc3VtZXJ8aW50ZXJuZXR8MHwwfDE; dssf=1; dssid2=ffdfbd3d-5fb4-4e15-8f5b-d4c41b0673e4; as_uct=2; pxro=2; as_loc=016eafa22e38352f13d4da32c3793d700b0dac7bbdc7119d76a6baff383d0918a3763a51fb0af1e0d3083eec85469d0847093f344afa900435e9cd45d3d2d8c25246fab7c04dcf929e41f9d2fb722a7ac6f1e5add0b8a357cb803777685c18cc; as_pcts=mzXhsiBLoiiiOSXZu9VRqV9MoRmbJqGKDPKEPf:cXnod6J5VE7ZNlVmrdL4hGdmUi8+oyUsQFRoO3q4LYbuBAwsDqWk7rCZo3E8tyUm_Xq0X63; as_dc=ucp3; geo=IN; as_rumid=4e4f496c-b6fb-49b5-8eda-0a8ada2d61d8; shld_bt_m=EuxwQUr6zfGkukaP0oUENA|1775227833|E_Xc4HBInoCJ6q0KA3FUlQ|qi1Kd_nZm-fHUCArLu2aaGWho-k; at_check=true; s_fid=2562F000C58834A6-16C85236D6141AD9; s_cc=true; s_vi=[CS]v1|34E7DBCD6D8F8718-400005D4C432E523[CE]; shld_bt_ck=ZqdNyZCikcOJCl1_gog7_w|1775227836|erwV97abEkNKseqd8pUyiSKog9yE8bly1N9T2KS5yLmEsMliwRjyxtw0e7q6L3ONFNXHPFrmgcUR4gQFqD3IpZsb1p3YxnFpMGpFJRvl5VMa_XoMSnzyfXl6k-_w9g_m0CN4DUekIsAJ4QzBtxQno_sxlf1ttDmCFqssHfAVw0W2gYRteFUfeLxnM_FMSopX8UZ8OSWAIZrBGXgoXB8wRcezcrzQcMqLpBF9Zrp30aXxdMjYfwcIsTFMAyYBBHmsT_8jWmiD42T4Q4hdlPyGwFneatvjWsaHP5jx9CvEjKUSpVD2SCT-SA4wn97mc1NDC68fAJjzfBuHkxUIWpd9GcsZOMequ3LapM16cg68edNGhvW4JIolTgshGKPlBuGK|lsU2kmUwUFqj5FD48ZRZjhg1xW8; mbox=session#b69cb27d333a422db94697dabe2b6287#1775223607; rtsid=%7BIN%3D%7Bt%3Da%3Bi%3DR756%3B%7D%3B%7D; as_atb=1.0|MjAyNi0wNC0wMyAwNjowOToxNg|8e363620e78c3df281510124634ece3a8f760fa6"
+
+
+def _merged_cookie_header() -> str:
+    parts: List[str] = []
+    if APPLE_COOKIES:
+        parts.append(APPLE_COOKIES)
+    if APPLE_COOKIES_FILE:
+        p = Path(APPLE_COOKIES_FILE).expanduser()
+        if p.is_file():
+            parts.append(p.read_text().strip())
+    if _INLINE_SESSION_COOKIE.strip():
+        parts.append(_INLINE_SESSION_COOKIE.strip())
+    return "; ".join(p for p in parts if p)
+
 
 # Product page used to seed session cookies (same family as all 6.1" 128GB colors).
 PRODUCT_URL = (
@@ -132,12 +167,6 @@ IPHONE16_128GB_COLORS = {
     "white": "MYE93HN/A",
     "black": "MYE73HN/A",
 }
-
-try:
-    import requests
-except ImportError:
-    print("Error: pip install -r requirements.txt")
-    sys.exit(1)
 
 
 def get_ist_now():
@@ -252,11 +281,19 @@ def _call_sba_init(session: requests.Session, product_html: str) -> None:
 def build_session():
     session = requests.Session()
     session.headers.update(_session_headers())
-    if APPLE_COOKIES:
-        _apply_cookie_string(session, APPLE_COOKIES)
-    r = session.get(PRODUCT_URL, timeout=45)
-    r.raise_for_status()
-    _call_sba_init(session, r.text)
+    merged = _merged_cookie_header()
+    if merged:
+        # When user-provided cookies are present (e.g. from bag page after selecting
+        # Saket/Noida), skip the product-page fetch entirely.  Fetching it from a
+        # non-Delhi IP causes Apple's CDN to overwrite the location cookies (as_loc,
+        # as_pcts, rtsid) with IP-based values, destroying the Delhi session context
+        # before we even call availability-message.
+        _apply_cookie_string(session, merged)
+        print(f"[{get_ist_now()}] Using provided APPLE_COOKIES — skipping product-page warmup.")
+    else:
+        r = session.get(PRODUCT_URL, timeout=45)
+        r.raise_for_status()
+        _call_sba_init(session, r.text)
     return session
 
 
@@ -435,12 +472,12 @@ def check_apple_iphone16():
     print(f"Same-day only (IST): {SAME_DAY_ONLY}")
     if ALLOWED_PICKUP_DATES is not None:
         print(f"Also alert on pickup dates (YYYYMMDD): {', '.join(ALLOWED_PICKUP_DATES)}")
-    if APPLE_COOKIES:
-        print("Using APPLE_COOKIES from environment (browser session)")
+    if _merged_cookie_header():
+        print("Using APPLE_COOKIES / APPLE_COOKIES_FILE / _INLINE_SESSION_COOKIE")
     else:
         print(
-            "Tip: for Saket/Noida in CI, set GitHub secret APPLE_COOKIES (Cookie header "
-            "from browser after PIN + pickup at Saket or Noida)."
+            "No APPLE_COOKIES: Apple may not return Saket/Noida on this IP "
+            "(e.g. GitHub Actions). Set secret APPLE_COOKIES from DevTools."
         )
     print("=" * 60)
 
@@ -479,6 +516,24 @@ def check_apple_iphone16():
                 }
             )
         time.sleep(0.5)
+
+    if REQUIRE_ALLOWED_STORE and not any(
+        r.get("store_matches_target") for r in results if r.get("sku")
+    ):
+        print()
+        print("!" * 60)
+        print(
+            "NOTE: This run never saw Saket (R756) or Noida (R787) in the API response."
+        )
+        print(
+            "The website can still show today pickup there — it uses your browser "
+            "location/cookies. This script only sees what Apple returns for *this* session."
+        )
+        print(
+            "Fix: set APPLE_COOKIES or APPLE_COOKIES_FILE from DevTools after PIN + "
+            "Saket or Noida on the buy page."
+        )
+        print("!" * 60)
 
     good = summarize_results(results)
     if not good:
