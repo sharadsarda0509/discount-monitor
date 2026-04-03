@@ -75,7 +75,10 @@ jobs:
           APPLE_PINCODE: "110017"
           APPLE_STORE_IDS: "R756,R787"
           # Default: same-day (daily) pickup only. For a fixed date, set e.g. APPLE_PICKUP_DATES: "20260331".
-          # Optional: Cookie header from browser (after PIN + pickup at Saket or Noida).
+          # Cookie header from DevTools, captured from the BAG PAGE after: add to cart →
+          # enter PIN 110017 → select Apple Saket or Noida as pickup store.
+          # Key cookies: as_loc (Delhi location token), rtsid ({IN={t=a;i=R756;}}), as_pcts.
+          # Get from Network tab → any apple.com/in/shop request → Request Headers → Cookie.
           APPLE_COOKIES: ${{ secrets.APPLE_COOKIES }}
           APPLE_SAME_DAY_ONLY: "true"
           APPLE_REQUIRE_SAKET: "true"
