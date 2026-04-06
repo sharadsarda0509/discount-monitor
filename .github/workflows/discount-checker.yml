@@ -1,11 +1,8 @@
 name: Discount & Offers Monitor
 
 on:
-  schedule:
-    # Runs every 5 minutes
-    - cron: '*/5 * * * *'
-  
-  # Allow manual trigger
+  # Triggered externally by cron-job.org every 5 minutes via workflow_dispatch
+  # (GitHub Actions scheduler is unreliable at sub-10-minute intervals)
   workflow_dispatch:
 
 jobs:
