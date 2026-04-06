@@ -77,7 +77,7 @@ jobs:
           # Key cookies: as_loc (Delhi location token), rtsid ({IN={t=a;i=R756;}}), as_pcts.
           # Get from Network tab → any apple.com/in/shop request → Request Headers → Cookie.
           APPLE_COOKIES: ${{ secrets.APPLE_COOKIES }}
-          APPLE_COOLDOWN_HOURS: "1"
+          APPLE_COOLDOWN_HOURS: "0.083"
           APPLE_SAME_DAY_ONLY: "true"
           APPLE_REQUIRE_SAKET: "true"
         run: |
