@@ -217,7 +217,7 @@ def send_ntfy_alert(pin: str, matches: List[Dict[str, Any]]):
         print(f"[{get_ist_now()}] ntfy not configured (NTFY_TOPIC empty)")
         return False
     try:
-        lines = [f"PIN {pin} — iPhone 16 128GB (6.1\") pickup:\n"]
+        lines = [f"PIN {pin} - iPhone 16 128GB (6.1\") pickup:\n"]
         for r in matches:
             lines.append(
                 f"- {r['color']}: {r['pickup_search_quote'] or 'Available'} "
@@ -225,7 +225,7 @@ def send_ntfy_alert(pin: str, matches: List[Dict[str, Any]]):
             )
         lines.append(f"\nOrder: {PRODUCT_URL}")
         message = "\n".join(lines)
-        title = f"iPhone 16: pickup available ({len(matches)} match(es)) — order now"
+        title = f"iPhone 16: pickup available ({len(matches)} match(es)) - order now"
         requests.post(
             f"https://ntfy.sh/{NTFY_TOPIC}",
             data=message.encode("utf-8"),
