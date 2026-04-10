@@ -91,7 +91,7 @@ jobs:
           EMAIL_PASSWORD: ${{ secrets.EMAIL_PASSWORD }}
           NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
           ALERT_COOLDOWN_HOURS: "4"
-          JIOMART_PINCODE: "560035"
+          JIOMART_PINCODES: "560035,560048,560103"
         run: |
           python check_jiomart_iphone16promax.py
 

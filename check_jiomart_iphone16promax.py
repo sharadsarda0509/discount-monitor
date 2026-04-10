@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 JioMart iPhone 16 Pro Max 256GB Stock Monitor
-Checks all 4 color variants for delivery availability at pincode 560035 (Bangalore).
+Checks all 4 color variants for delivery availability across multiple Bangalore pincodes.
 Uses JioMart's promise API — no browser required.
 """
 
@@ -21,7 +21,8 @@ STATE_DIR = Path('.alert_state')
 STATE_FILE = STATE_DIR / 'last_alert.json'
 
 NTFY_TOPIC = os.environ.get('NTFY_TOPIC', '')
-TARGET_PINCODE = os.environ.get('JIOMART_PINCODE', '560035')
+_raw_pincodes = os.environ.get('JIOMART_PINCODES', '560035,560048,560103')
+TARGET_PINCODES = [p.strip() for p in _raw_pincodes.split(',') if p.strip()]
 
 # All iPhone 16 Pro Max 256GB color variants on JioMart
 PRODUCTS = [
@@ -31,9 +32,11 @@ PRODUCTS = [
     {'color': 'Natural Titanium', 'product_id': 609946197, 'article_id': '494423062'},
 ]
 
-# Approximate coordinates for pincode 560035 (Bangalore)
+# Coordinates per pincode — must match the area for JioMart's geolocation validation
 PINCODE_COORDS = {
-    '560035': {'lat': 12.9048022, 'long': 77.6821069},
+    '560035': {'lat': 12.9048022, 'long': 77.6821069},  # Sarjapur Road area
+    '560048': {'lat': 12.9197,    'long': 77.5087},     # Rajarajeshwari Nagar
+    '560103': {'lat': 12.9090,    'long': 77.7113},     # Sarjapur
 }
 
 PACKAGE_DIM = {
@@ -207,21 +210,22 @@ def check_delivery_promise(session: requests.Session, article_id: str, pincode: 
         return None
 
 
-def send_ntfy_alert(in_stock_items):
+def send_ntfy_alert(pincode, in_stock_items):
     if not NTFY_TOPIC:
         print(f"[{get_ist_now()}] ntfy.sh not configured")
         return False
-    colors = ', '.join(item['color'] for item in in_stock_items)
     first = in_stock_items[0]
-    title = f"JioMart iPhone 16 Pro Max 256GB IN STOCK ({TARGET_PINCODE})"
-    lines = [f"iPhone 16 Pro Max 256GB available at pincode {TARGET_PINCODE}!\n"]
+    title = f"JioMart iPhone 16 Pro Max 256GB IN STOCK — {pincode}"
+    lines = [f"iPhone 16 Pro Max 256GB available for delivery to {pincode}!\n"]
     for item in in_stock_items:
-        url = f"https://www.jiomart.com/p/electronics/apple-iphone-16-pro-max-256-gb-{item['color'].lower().replace(' ', '-')}/{item['product_id']}"
+        slug = item['color'].lower().replace(' ', '-')
+        url = f"https://www.jiomart.com/p/electronics/apple-iphone-16-pro-max-256-gb-{slug}/{item['product_id']}"
         lines.append(f"• {item['color']}: {item['delivery']}")
         lines.append(f"  {url}")
     message = '\n'.join(lines)
+    first_slug = first['color'].lower().replace(' ', '-')
+    click_url = f"https://www.jiomart.com/p/electronics/apple-iphone-16-pro-max-256-gb-{first_slug}/{first['product_id']}"
     try:
-        url = f"https://www.jiomart.com/p/electronics/apple-iphone-16-pro-max-256-gb-{first['color'].lower().replace(' ', '-')}/{first['product_id']}"
         r = requests.post(
             f'https://ntfy.sh/{NTFY_TOPIC}',
             data=message.encode('utf-8'),
@@ -229,19 +233,19 @@ def send_ntfy_alert(in_stock_items):
                 'Title': title,
                 'Priority': 'urgent',
                 'Tags': 'iphone,shopping,rotating_light',
-                'Click': url,
+                'Click': click_url,
             },
             timeout=10,
         )
         r.raise_for_status()
-        print(f"[{get_ist_now()}] ntfy.sh notification sent!")
+        print(f"[{get_ist_now()}] ntfy.sh notification sent for {pincode}!")
         return True
     except Exception as e:
         print(f"[{get_ist_now()}] Failed to send ntfy notification: {e}")
         return False
 
 
-def send_email_alert(in_stock_items):
+def send_email_alert(pincode, in_stock_items):
     sender = os.environ.get('SENDER_EMAIL')
     receiver = os.environ.get('RECEIVER_EMAIL')
     password = os.environ.get('EMAIL_PASSWORD')
@@ -249,13 +253,13 @@ def send_email_alert(in_stock_items):
         print(f"[{get_ist_now()}] Email credentials not configured")
         return False
 
-    colors = ', '.join(item['color'] for item in in_stock_items)
-    subject = f"iPhone 16 Pro Max 256GB IN STOCK on JioMart ({TARGET_PINCODE})!"
+    subject = f"iPhone 16 Pro Max 256GB IN STOCK on JioMart — {pincode}!"
 
     rows_html = ''
     rows_text = ''
     for item in in_stock_items:
-        url = f"https://www.jiomart.com/p/electronics/apple-iphone-16-pro-max-256-gb-{item['color'].lower().replace(' ', '-')}/{item['product_id']}"
+        slug = item['color'].lower().replace(' ', '-')
+        url = f"https://www.jiomart.com/p/electronics/apple-iphone-16-pro-max-256-gb-{slug}/{item['product_id']}"
         rows_html += f"""
         <tr>
           <td style="padding:8px;border:1px solid #ddd;"><strong>{item['color']}</strong></td>
@@ -269,7 +273,7 @@ def send_email_alert(in_stock_items):
 <html><body style="font-family:Arial,sans-serif;line-height:1.6;color:#333;">
   <div style="max-width:600px;margin:0 auto;padding:20px;background:#f9f9f9;border-radius:10px;">
     <h2 style="color:#d62d20;">iPhone 16 Pro Max 256GB — IN STOCK!</h2>
-    <p>Available for delivery to pincode <strong>{TARGET_PINCODE}</strong>:</p>
+    <p>Available for delivery to pincode <strong>{pincode}</strong>:</p>
     <table style="border-collapse:collapse;width:100%;margin:16px 0;">
       <thead><tr style="background:#eee;">
         <th style="padding:8px;border:1px solid #ddd;text-align:left;">Color</th>
@@ -282,7 +286,7 @@ def send_email_alert(in_stock_items):
   </div>
 </body></html>"""
 
-    text_body = f"iPhone 16 Pro Max 256GB IN STOCK at pincode {TARGET_PINCODE}!\n\n{rows_text}\nAlert at: {ist_time}\n"
+    text_body = f"iPhone 16 Pro Max 256GB IN STOCK at pincode {pincode}!\n\n{rows_text}\nAlert at: {ist_time}\n"
 
     msg = MIMEMultipart('alternative')
     msg['From'] = sender
@@ -295,7 +299,7 @@ def send_email_alert(in_stock_items):
         with smtplib.SMTP_SSL('smtp.gmail.com', 465) as srv:
             srv.login(sender, password)
             srv.send_message(msg)
-        print(f"[{get_ist_now()}] Email alert sent!")
+        print(f"[{get_ist_now()}] Email alert sent for {pincode}!")
         return True
     except Exception as e:
         print(f"[{get_ist_now()}] Failed to send email: {e}")
@@ -305,52 +309,60 @@ def send_email_alert(in_stock_items):
 def check_jiomart():
     print('=' * 60)
     print(f"JioMart iPhone 16 Pro Max Monitor — {get_ist_now()}")
-    print(f"Target pincode: {TARGET_PINCODE}")
+    print(f"Target pincodes: {', '.join(TARGET_PINCODES)}")
     print('=' * 60)
 
-    session = make_session(TARGET_PINCODE)
-    in_stock = []
+    any_alerted = False
 
-    for product in PRODUCTS:
-        color = product['color']
-        pid = product['product_id']
-        aid = product['article_id']
-        print(f"\n[{color}] product_id={pid}, article_id={aid}")
+    for pincode in TARGET_PINCODES:
+        print(f"\n{'─' * 40}")
+        print(f"Pincode: {pincode}")
+        print('─' * 40)
 
-        if not check_product_available(session, pid, TARGET_PINCODE):
-            print(f"  -> Not generally available, skipping promise check")
+        session = make_session(pincode)
+        in_stock = []
+
+        for product in PRODUCTS:
+            color = product['color']
+            pid = product['product_id']
+            aid = product['article_id']
+            print(f"\n  [{color}]")
+
+            if not check_product_available(session, pid, pincode):
+                print(f"    -> Not generally available, skipping")
+                continue
+
+            result = check_delivery_promise(session, aid, pincode)
+            if result:
+                sellers_info = [f"{s.get('storeid')}/{s.get('store_type')}" for s in result['sellers']]
+                print(f"    -> IN STOCK! delivery={result['delivery']}, stores={sellers_info}")
+                in_stock.append({
+                    'color': color,
+                    'product_id': pid,
+                    'delivery': result['delivery'] or result['display_message'],
+                    'sellers': sellers_info,
+                })
+            else:
+                print(f"    -> Not deliverable to {pincode}")
+
+        print(f"\n  Summary: {len(in_stock)}/{len(PRODUCTS)} colors in stock for {pincode}")
+
+        if not in_stock:
+            print(f"  No stock for {pincode}. No alert.")
             continue
 
-        result = check_delivery_promise(session, aid, TARGET_PINCODE)
-        if result:
-            sellers_info = [f"{s.get('storeid')}/{s.get('store_type')}" for s in result['sellers']]
-            print(f"  -> IN STOCK! delivery={result['delivery']}, stores={sellers_info}")
-            in_stock.append({
-                'color': color,
-                'product_id': pid,
-                'delivery': result['delivery'] or result['display_message'],
-                'sellers': sellers_info,
-            })
-        else:
-            print(f"  -> Not deliverable to {TARGET_PINCODE}")
+        alert_key = f'jiomart_iphone16promax_{pincode}'
+        if not should_send_alert(alert_key):
+            continue
 
-    print(f"\n[{get_ist_now()}] Summary: {len(in_stock)}/{len(PRODUCTS)} colors in stock for {TARGET_PINCODE}")
+        ntfy_ok = send_ntfy_alert(pincode, in_stock)
+        email_ok = send_email_alert(pincode, in_stock)
 
-    if not in_stock:
-        print(f"[{get_ist_now()}] No stock found. No alert sent.")
-        return False
+        if ntfy_ok or email_ok:
+            record_alert(alert_key)
+            any_alerted = True
 
-    alert_key = f'jiomart_iphone16promax_{TARGET_PINCODE}'
-    if not should_send_alert(alert_key):
-        return False
-
-    ntfy_ok = send_ntfy_alert(in_stock)
-    email_ok = send_email_alert(in_stock)
-
-    if ntfy_ok or email_ok:
-        record_alert(alert_key)
-
-    return ntfy_ok or email_ok
+    return any_alerted
 
 
 if __name__ == '__main__':
