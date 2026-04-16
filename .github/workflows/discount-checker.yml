@@ -85,6 +85,7 @@ jobs:
           python check_apple_iphone16.py
       
       - name: Check JioMart iPhone 16 Pro Max 256GB stock (560035)
+        if: false  # temporarily disabled
         env:
           SENDER_EMAIL: ${{ secrets.SENDER_EMAIL }}
           RECEIVER_EMAIL: ${{ secrets.RECEIVER_EMAIL }}
