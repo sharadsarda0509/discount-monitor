@@ -108,6 +108,10 @@ jobs:
           JIOMART_IPHONE_COOLDOWN_HOURS: "1"
           JIOMART_MIN_DISCOUNT: "2000"
           JIOMART_PINCODES: "560035"
+          # Set JIOMART_LAT/JIOMART_LON secrets to your exact home coords so the
+          # monitor checks your specific QC zone, not the pincode centroid.
+          JIOMART_LAT: ${{ secrets.JIOMART_LAT }}
+          JIOMART_LON: ${{ secrets.JIOMART_LON }}
         run: |
           python check_jiomart_iphone.py
         continue-on-error: true

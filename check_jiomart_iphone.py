@@ -43,6 +43,12 @@ NTFY_TOPIC = os.environ.get("NTFY_TOPIC", "")
 _raw = os.environ.get("JIOMART_PINCODES", "560035")
 TARGET_PINCODES = [p.strip() for p in _raw.split(",") if p.strip()]
 
+# Optional: override lat/lon for a single pincode when the centroid falls in the wrong QC zone.
+# Get your exact coords from Google Maps (long-press your location).
+# Only used when monitoring a single pincode.
+JIOMART_LAT = os.environ.get("JIOMART_LAT", "")
+JIOMART_LON = os.environ.get("JIOMART_LON", "")
+
 BEARER_TOKEN = "Bearer Njg1OTQ1ZjQ2YzhjN2FlZTNmM2FmNjA1OlRwS3c3d0Q5aA=="
 
 SEARCH_URL = "https://www.jiomart.com/ext/vertex/application/api/v1.0/products"
@@ -134,19 +140,26 @@ def make_headers(pincode: str, lat: str, lon: str, polygon_ids: List[str]) -> Di
 def resolve_pincode(pincode: str) -> Optional[Dict[str, Any]]:
     """
     Returns {lat, lon, store_ids, polygon_ids} for the given pincode.
-    Calls logistics + delivery-promise APIs to get the exact stores that serve it.
+    If JIOMART_LAT/JIOMART_LON are set (and only one pincode is monitored),
+    uses those exact coords instead of the pincode centroid — important because
+    a single pincode can span multiple QC zones with different stock levels.
     """
-    try:
-        h = _base_headers()
-        h["x-location-detail"] = json.dumps({"country": "INDIA", "country_iso_code": "IN",
-                                               "city": "BENGALURU", "pincode": pincode, "state": "KARNATAKA"})
-        r = requests.get(LOGISTICS_URL.format(pincode=pincode), headers=h, timeout=15)
-        r.raise_for_status()
-        coords = r.json()["data"][0]["lat_long"]["coordinates"]  # GeoJSON: [lon, lat]
-        lat, lon = str(coords[1]), str(coords[0])
-    except Exception as e:
-        print(f"  [resolve] logistics API failed for {pincode}: {e}")
-        return None
+    # Use exact coords if provided (avoids centroid landing in wrong QC zone)
+    if JIOMART_LAT and JIOMART_LON and len(TARGET_PINCODES) == 1:
+        lat, lon = JIOMART_LAT, JIOMART_LON
+        print(f"  [resolve] using provided coords: {lat}, {lon}")
+    else:
+        try:
+            h = _base_headers()
+            h["x-location-detail"] = json.dumps({"country": "INDIA", "country_iso_code": "IN",
+                                                   "city": "BENGALURU", "pincode": pincode, "state": "KARNATAKA"})
+            r = requests.get(LOGISTICS_URL.format(pincode=pincode), headers=h, timeout=15)
+            r.raise_for_status()
+            coords = r.json()["data"][0]["lat_long"]["coordinates"]  # GeoJSON: [lon, lat]
+            lat, lon = str(coords[1]), str(coords[0])
+        except Exception as e:
+            print(f"  [resolve] logistics API failed for {pincode}: {e}")
+            return None
 
     try:
         h2 = make_headers(pincode, lat, lon, [])
