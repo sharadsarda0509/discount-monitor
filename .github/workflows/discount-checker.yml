@@ -107,7 +107,7 @@ jobs:
           NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
           JIOMART_IPHONE_COOLDOWN_HOURS: "1"
           JIOMART_MIN_DISCOUNT: "2000"
-          JIOMART_PINCODES: "560035,560048,560103"
+          JIOMART_PINCODES: "560035"
         run: |
           python check_jiomart_iphone.py
         continue-on-error: true
