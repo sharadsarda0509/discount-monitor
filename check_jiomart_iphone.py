@@ -46,7 +46,7 @@ TARGET_PINCODES = [p.strip() for p in _raw.split(",") if p.strip()]
 BEARER_TOKEN = "Bearer Njg1OTQ1ZjQ2YzhjN2FlZTNmM2FmNjA1OlRwS3c3d0Q5aA=="
 
 SEARCH_URL = "https://www.jiomart.com/ext/vertex/application/api/v1.0/products"
-SIZES_URL = "https://www.jiomart.com/api/service/application/catalog/v2.0/products/{slug}/sizes"
+SIZES_PRICE_URL = "https://www.jiomart.com/api/service/application/catalog/v1.0/products/sizes/price"
 LOGISTICS_URL = "https://www.jiomart.com/api/service/application/logistics/v1.0/pincode/{pincode}"
 DELIVERY_PROMISE_URL = "https://www.jiomart.com/api/service/application/logistics/v1.0/delivery-promise"
 BANKOFFERS_URL = "https://www.jiomart.com/api/service/application/content/v2.0/pages"
@@ -208,15 +208,13 @@ def discover_iphone_slugs(label: str, query: str, pincode_info: Dict) -> List[Di
 
 def check_slug_stock(slug: str, name: str, effective: int, marked: int, pincode_info: Dict) -> Optional[Dict[str, Any]]:
     """
-    Sizes API — authoritative per-pincode stock check.
-    Price comes from the vertex search (effective/marked params).
-    Returns item dict if sellable=True, else None.
+    sizes/price POST — same API the product page uses for per-pincode availability.
+    Returns item dict with qty if serviceable, else None.
     """
-    store_ids_str = ",".join(pincode_info["store_ids"])
     try:
-        r = requests.get(
-            SIZES_URL.format(slug=slug),
-            params={"store_ids": store_ids_str},
+        r = requests.post(
+            SIZES_PRICE_URL,
+            json={"items": [{"slug": slug, "size": "OS"}]},
             headers=make_headers(
                 pincode_info["pincode"], pincode_info["lat"],
                 pincode_info["lon"], pincode_info["polygon_ids"]
@@ -224,31 +222,45 @@ def check_slug_stock(slug: str, name: str, effective: int, marked: int, pincode_
             timeout=15,
         )
         r.raise_for_status()
-        d = r.json()
+        items = r.json().get("items") or []
     except Exception as e:
-        print(f"  [{name}] sizes API failed: {e}")
+        print(f"  [{name}] sizes/price failed: {e}")
         return None
 
-    sellable = d.get("sellable", False)
+    if not items:
+        print(f"  [{name}]: OOS (no serviceable article)")
+        return None
+
+    item = items[0]
+    serviceable = item.get("is_serviceable", False)
+    qty = item.get("quantity", 0)
+    price_data = item.get("price") or {}
+    api_effective = int(price_data.get("effective") or effective or 0)
+    api_marked = int(price_data.get("marked") or marked or 0)
+    store_name = (item.get("store") or {}).get("name", "")
+
+    eff = api_effective or effective
+    mkd = api_marked or marked
+    base_discount = max(0, mkd - eff) if mkd > 0 and eff > 0 else 0
     url = f"{JIOMART_BASE}/{slug}"
-    base_discount = max(0, marked - effective) if marked > 0 and effective > 0 else 0
-    stock_str = "IN STOCK" if sellable else "OOS"
+    stock_str = f"IN STOCK (qty={qty})" if serviceable else "OOS"
 
-    if effective:
-        price_str = f"₹{effective:,} (was ₹{marked:,}, -₹{base_discount:,})" if base_discount > 0 else f"₹{effective:,}"
+    if eff:
+        price_str = f"₹{eff:,} (was ₹{mkd:,}, -₹{base_discount:,})" if base_discount > 0 else f"₹{eff:,}"
     else:
-        sizes = d.get("sizes") or []
-        price_str = f"qty={sum(s.get('quantity', 0) for s in sizes)}"
+        price_str = ""
 
-    print(f"  [{name}]: {price_str}  [{stock_str}]")
+    print(f"  [{name}]: {price_str}  [{stock_str}]  store={store_name}")
 
-    if not sellable:
+    if not serviceable:
         return None
     return {
         "name": name,
-        "effective": effective,
-        "marked": marked,
+        "effective": eff,
+        "marked": mkd,
         "base_discount": base_discount,
+        "qty": qty,
+        "store": store_name,
         "url": url,
     }
 
@@ -334,10 +346,11 @@ def send_ntfy_alert(pincode: str, qualifying: List[Dict], bank_offer: Optional[D
             lines.append(f"Bank offer: {bank_offer['title']} (₹{bank_offer['amount']:,} off, non-EMI)")
             lines.append("")
         for m in qualifying:
+            qty_str = f"  qty={m['qty']}" if m.get("qty") else ""
             if m["base_discount"] > 0:
-                lines.append(f"• {m['name']}: ₹{m['effective']:,} (was ₹{m['marked']:,}, -₹{m['base_discount']:,})")
+                lines.append(f"• {m['name']}: ₹{m['effective']:,} (was ₹{m['marked']:,}, -₹{m['base_discount']:,}){qty_str}")
             else:
-                lines.append(f"• {m['name']}: ₹{m['effective']:,} (in stock)")
+                lines.append(f"• {m['name']}: ₹{m['effective']:,} (in stock{qty_str})")
             lines.append(f"  {m['url']}")
         message = "\n".join(lines)
         best_base = max((m["base_discount"] for m in qualifying), default=0)
@@ -375,10 +388,11 @@ def send_email_alert(pincode: str, qualifying: List[Dict], bank_offer: Optional[
             lines.append(f"Bank offer: {bank_offer['title']}")
             lines.append(f"  {bank_offer['description']}\n")
         for m in qualifying:
+            qty_str = f"  qty={m['qty']}" if m.get("qty") else ""
             if m["base_discount"] > 0:
-                lines.append(f"  • {m['name']}: ₹{m['effective']:,} (was ₹{m['marked']:,}, -₹{m['base_discount']:,})")
+                lines.append(f"  • {m['name']}: ₹{m['effective']:,} (was ₹{m['marked']:,}, -₹{m['base_discount']:,}){qty_str}")
             else:
-                lines.append(f"  • {m['name']}: ₹{m['effective']:,} (in stock)")
+                lines.append(f"  • {m['name']}: ₹{m['effective']:,} (in stock{qty_str})")
             lines.append(f"    {m['url']}")
         lines.append(f"\nChecked at: {ist_time}")
         text_body = "\n".join(lines)
