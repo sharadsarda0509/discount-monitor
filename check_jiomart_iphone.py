@@ -4,13 +4,14 @@ JioMart iPhone discount monitor — iPhone 15, 16, 17 series.
 
 Alerts when ANY in-stock iPhone 15/16/17 has:
   (a) base price discount >= MIN_DISCOUNT_RS (effective < marked), OR
-  (b) an active non-EMI bank card offer >= MIN_DISCOUNT_RS tagged for Electronics
+  (b) an active non-EMI Electronics bank card offer >= MIN_DISCOUNT_RS
 
-Bank offers come from the content pages API (bankoffers/bankoffer tag).
-Stock + base price come from the Fynd vertex search API.
+Stock check is pincode-accurate:
+  1. Logistics API → pincode coordinates
+  2. Delivery-promise → correct store IDs for that pincode
+  3. Sizes API per slug → authoritative sellable/price for those stores
 
-Bearer token is JioMart's public Fynd app credential (base64 of app_id:app_token).
-If requests start failing with 401, recapture from any /api/service/* request header.
+Bank offers from /api/service/application/content/v2.0/pages?tags=bankoffers,bankoffer
 """
 
 import os
@@ -22,7 +23,7 @@ from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 try:
     import requests
@@ -39,12 +40,15 @@ STATE_FILE = STATE_DIR / "last_alert.json"
 
 NTFY_TOPIC = os.environ.get("NTFY_TOPIC", "")
 
-_raw = os.environ.get("JIOMART_PINCODES", "560035,560048,560103")
+_raw = os.environ.get("JIOMART_PINCODES", "560035")
 TARGET_PINCODES = [p.strip() for p in _raw.split(",") if p.strip()]
 
 BEARER_TOKEN = "Bearer Njg1OTQ1ZjQ2YzhjN2FlZTNmM2FmNjA1OlRwS3c3d0Q5aA=="
 
 SEARCH_URL = "https://www.jiomart.com/ext/vertex/application/api/v1.0/products"
+SIZES_URL = "https://www.jiomart.com/api/service/application/catalog/v2.0/products/{slug}/sizes"
+LOGISTICS_URL = "https://www.jiomart.com/api/service/application/logistics/v1.0/pincode/{pincode}"
+DELIVERY_PROMISE_URL = "https://www.jiomart.com/api/service/application/logistics/v1.0/delivery-promise"
 BANKOFFERS_URL = "https://www.jiomart.com/api/service/application/content/v2.0/pages"
 
 SEARCH_QUERIES = [
@@ -53,11 +57,8 @@ SEARCH_QUERIES = [
     ("iPhone 17", "apple iphone 17"),
 ]
 
-# Decoded form — requests will URL-encode this correctly (no double-encoding)
-STORE_FILTER = "journey:quickcommerce:::store_ids:14050||3191||15460"
 JIOMART_BASE = "https://www.jiomart.com/product"
 
-# Regex to extract rupee amounts from offer titles/descriptions
 _RS_RE = re.compile(r"[Rr]s\.?\s*([\d,]+)\s*(?:[Oo]ff|[Dd]iscount|[Ii]nstant|[Cc]ashback)")
 
 
@@ -99,7 +100,7 @@ def record_alert(alert_type: str):
     STATE_FILE.write_text(json.dumps(state, indent=2))
 
 
-def make_headers(pincode: str) -> Dict[str, str]:
+def _base_headers() -> Dict[str, str]:
     return {
         "User-Agent": (
             "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
@@ -108,32 +109,156 @@ def make_headers(pincode: str) -> Dict[str, str]:
         "Accept": "application/json, text/plain, */*",
         "authorization": BEARER_TOKEN,
         "x-currency-code": "INR",
-        "x-location-detail": json.dumps({
-            "country": "INDIA",
-            "country_iso_code": "IN",
-            "city": "BENGALURU",
-            "pincode": pincode,
-            "state": "KARNATAKA",
-        }),
-        "x-geolocation": json.dumps({
-            "latitude": "12.9371619",
-            "longitude": "77.6951926",
-            "polygon_ids": ["TN1S_QC_aa4f6670", "8792_QC_efefecd4"],
-        }),
         "x-fp-sdk-version": "1.10.3-60",
         "Origin": "https://www.jiomart.com",
         "Referer": "https://www.jiomart.com/",
     }
 
 
+def make_headers(pincode: str, lat: str, lon: str, polygon_ids: List[str]) -> Dict[str, str]:
+    h = _base_headers()
+    h["x-location-detail"] = json.dumps({
+        "country": "INDIA",
+        "country_iso_code": "IN",
+        "city": "BENGALURU",
+        "pincode": pincode,
+        "state": "KARNATAKA",
+    })
+    geo: Dict[str, Any] = {"latitude": lat, "longitude": lon}
+    if polygon_ids:
+        geo["polygon_ids"] = polygon_ids
+    h["x-geolocation"] = json.dumps(geo)
+    return h
+
+
+def resolve_pincode(pincode: str) -> Optional[Dict[str, Any]]:
+    """
+    Returns {lat, lon, store_ids, polygon_ids} for the given pincode.
+    Calls logistics + delivery-promise APIs to get the exact stores that serve it.
+    """
+    try:
+        h = _base_headers()
+        h["x-location-detail"] = json.dumps({"country": "INDIA", "country_iso_code": "IN",
+                                               "city": "BENGALURU", "pincode": pincode, "state": "KARNATAKA"})
+        r = requests.get(LOGISTICS_URL.format(pincode=pincode), headers=h, timeout=15)
+        r.raise_for_status()
+        coords = r.json()["data"][0]["lat_long"]["coordinates"]  # GeoJSON: [lon, lat]
+        lat, lon = str(coords[1]), str(coords[0])
+    except Exception as e:
+        print(f"  [resolve] logistics API failed for {pincode}: {e}")
+        return None
+
+    try:
+        h2 = make_headers(pincode, lat, lon, [])
+        r2 = requests.get(DELIVERY_PROMISE_URL, headers=h2, timeout=15)
+        r2.raise_for_status()
+        items = r2.json().get("items", [])
+        store_ids = [str(s["uid"]) for s in items]
+        polygon_ids = []
+        for s in items:
+            for j in s.get("journey_wise_promise", []):
+                pid = (j.get("meta") or {}).get("polygon_id")
+                if pid:
+                    polygon_ids.append(pid)
+        return {"lat": lat, "lon": lon, "store_ids": store_ids, "polygon_ids": polygon_ids}
+    except Exception as e:
+        print(f"  [resolve] delivery-promise failed for {pincode}: {e}")
+        return None
+
+
+def discover_iphone_slugs(label: str, query: str, pincode_info: Dict) -> List[Dict[str, Any]]:
+    """
+    Vertex search to discover iPhone model slugs with price data.
+    Stock is verified separately via the sizes API.
+    """
+    store_filter = "journey:quickcommerce:::store_ids:" + "||".join(pincode_info["store_ids"])
+    try:
+        r = requests.get(
+            SEARCH_URL,
+            params={"f": store_filter, "page_size": "30", "q": query},
+            headers=make_headers(
+                pincode_info["pincode"], pincode_info["lat"],
+                pincode_info["lon"], pincode_info["polygon_ids"]
+            ),
+            timeout=20,
+        )
+        r.raise_for_status()
+        items = r.json().get("items") or []
+    except Exception as e:
+        print(f"  [{label}] Search failed: {e}")
+        return []
+
+    results = []
+    for item in items:
+        name = item.get("name", "")
+        if not any(gen in name for gen in ["iPhone 15", "iPhone 16", "iPhone 17"]):
+            continue
+        if any(w in name.lower() for w in ["adapter", "cable", "case", "cover", "charger", "airpod", "watch",
+                                            "screen", "protector", "panzerglass"]):
+            continue
+        slug = item.get("slug", "")
+        if not slug:
+            continue
+        price = item.get("price") or {}
+        effective = (price.get("effective") or {}).get("min", 0)
+        marked = (price.get("marked") or {}).get("min", 0)
+        results.append({"name": name, "slug": slug, "effective": effective, "marked": marked})
+    return results
+
+
+def check_slug_stock(slug: str, name: str, effective: int, marked: int, pincode_info: Dict) -> Optional[Dict[str, Any]]:
+    """
+    Sizes API — authoritative per-pincode stock check.
+    Price comes from the vertex search (effective/marked params).
+    Returns item dict if sellable=True, else None.
+    """
+    store_ids_str = ",".join(pincode_info["store_ids"])
+    try:
+        r = requests.get(
+            SIZES_URL.format(slug=slug),
+            params={"store_ids": store_ids_str},
+            headers=make_headers(
+                pincode_info["pincode"], pincode_info["lat"],
+                pincode_info["lon"], pincode_info["polygon_ids"]
+            ),
+            timeout=15,
+        )
+        r.raise_for_status()
+        d = r.json()
+    except Exception as e:
+        print(f"  [{name}] sizes API failed: {e}")
+        return None
+
+    sellable = d.get("sellable", False)
+    url = f"{JIOMART_BASE}/{slug}"
+    base_discount = max(0, marked - effective) if marked > 0 and effective > 0 else 0
+    stock_str = "IN STOCK" if sellable else "OOS"
+
+    if effective:
+        price_str = f"₹{effective:,} (was ₹{marked:,}, -₹{base_discount:,})" if base_discount > 0 else f"₹{effective:,}"
+    else:
+        sizes = d.get("sizes") or []
+        price_str = f"qty={sum(s.get('quantity', 0) for s in sizes)}"
+
+    print(f"  [{name}]: {price_str}  [{stock_str}]")
+
+    if not sellable:
+        return None
+    return {
+        "name": name,
+        "effective": effective,
+        "marked": marked,
+        "base_discount": base_discount,
+        "url": url,
+    }
+
+
 def _parse_rs_amount(text: str) -> int:
-    """Extract the largest rupee amount mentioned in text (e.g. 'Rs. 2000 Off' → 2000)."""
     amounts = [int(m.replace(",", "")) for m in _RS_RE.findall(text)]
     return max(amounts) if amounts else 0
 
 
 def _is_emi_offer(title: str, description: str) -> bool:
-    """Return True if the offer is EMI-only (and not a direct/non-EMI bank offer)."""
     combined = (title + " " + description).lower()
     if "non-emi" in combined or "non emi" in combined:
         return False
@@ -141,24 +266,20 @@ def _is_emi_offer(title: str, description: str) -> bool:
 
 
 def _is_electronics_offer(tags: List[str]) -> bool:
-    """Return True if the offer applies to electronics (tagged or generic)."""
     lower_tags = [t.lower() for t in tags]
     category_tags = [t for t in lower_tags if t not in ("bankoffer", "bankoffers")]
     if not category_tags:
-        return True  # generic — applies to all categories
+        return True
     return "electronics" in lower_tags
 
 
 def check_bank_offers() -> Optional[Dict[str, Any]]:
-    """
-    Fetch active non-EMI bank card offers for Electronics.
-    Returns the best qualifying offer dict (amount, title) or None.
-    """
+    """Returns the best active non-EMI Electronics bank offer >= MIN_DISCOUNT_RS, or None."""
     try:
         r = requests.get(
             BANKOFFERS_URL,
             params={"page_size": "50", "tags": "bankoffers,bankoffer"},
-            headers=make_headers(TARGET_PINCODES[0]),
+            headers=_base_headers(),
             timeout=20,
         )
         r.raise_for_status()
@@ -173,15 +294,12 @@ def check_bank_offers() -> Optional[Dict[str, Any]]:
     for item in items:
         if not item.get("published"):
             continue
-
         schedule = (item.get("_schedule") or {}).get("next_schedule") or []
         active = False
         for s in schedule:
-            start = s.get("start", "")
-            end = s.get("end", "")
             try:
-                start_dt = datetime.fromisoformat(start.replace("Z", "+00:00"))
-                end_dt = datetime.fromisoformat(end.replace("Z", "+00:00"))
+                start_dt = datetime.fromisoformat(s.get("start", "").replace("Z", "+00:00"))
+                end_dt = datetime.fromisoformat(s.get("end", "").replace("Z", "+00:00"))
                 if start_dt <= now <= end_dt:
                     active = True
                     break
@@ -189,20 +307,16 @@ def check_bank_offers() -> Optional[Dict[str, Any]]:
                 pass
         if not active:
             continue
-
         tags = item.get("tags") or []
         if not _is_electronics_offer(tags):
             continue
-
         title = item.get("title", "")
         desc = item.get("description", "")
         if _is_emi_offer(title, desc):
             continue
-
         amount = _parse_rs_amount(title) or _parse_rs_amount(desc)
         if amount < MIN_DISCOUNT_RS:
             continue
-
         print(f"  [BankOffer] {title!r} — ₹{amount:,} off (non-EMI, Electronics)")
         if best is None or amount > best["amount"]:
             best = {"amount": amount, "title": title, "description": desc}
@@ -210,95 +324,33 @@ def check_bank_offers() -> Optional[Dict[str, Any]]:
     return best
 
 
-def search_in_stock_iphones(label: str, query: str, pincode: str) -> List[Dict[str, Any]]:
-    """
-    Search for a model and return all IN-STOCK items with their base price info.
-    Includes both discounted and full-price items.
-    """
-    params = {
-        "f": STORE_FILTER,
-        "page_size": "30",
-        "q": query,
-    }
-    try:
-        r = requests.get(SEARCH_URL, params=params, headers=make_headers(pincode), timeout=20)
-        r.raise_for_status()
-        data = r.json()
-    except Exception as e:
-        print(f"  [{label}] Search failed: {e}")
-        return []
-
-    items = data.get("items") or []
-    results = []
-    for item in items:
-        name = item.get("name", "")
-        if not any(gen in name for gen in ["iPhone 15", "iPhone 16", "iPhone 17"]):
-            continue
-        if any(w in name.lower() for w in ["adapter", "cable", "case", "cover", "charger", "airpod", "watch"]):
-            continue
-
-        price = item.get("price") or {}
-        effective = (price.get("effective") or {}).get("min", 0)
-        marked = (price.get("marked") or {}).get("min", 0)
-        in_stock = item.get("sellable", True)
-        slug = item.get("slug", "")
-        url = f"{JIOMART_BASE}/{slug}" if slug else ""
-        base_discount = max(0, marked - effective) if marked > 0 else 0
-
-        stock_str = "IN STOCK" if in_stock else "OOS"
-        if effective < marked:
-            price_str = f"₹{effective:,} (was ₹{marked:,}, -₹{base_discount:,})"
-        else:
-            price_str = f"₹{effective:,} (no base discount)"
-        print(f"  [{label}] {name}: {price_str}  [{stock_str}]")
-
-        if in_stock and effective > 0:
-            results.append({
-                "name": name,
-                "effective": effective,
-                "marked": marked,
-                "base_discount": base_discount,
-                "url": url,
-            })
-
-    return results
-
-
-def send_ntfy_alert(
-    pincode: str,
-    in_stock: List[Dict[str, Any]],
-    bank_offer: Optional[Dict[str, Any]],
-) -> bool:
+def send_ntfy_alert(pincode: str, qualifying: List[Dict], bank_offer: Optional[Dict]) -> bool:
     if not NTFY_TOPIC:
         print(f"[{get_ist_now()}] ntfy not configured")
         return False
     try:
         lines = [f"JioMart iPhone deal — pincode {pincode}!\n"]
         if bank_offer:
-            lines.append(f"Bank offer: {bank_offer['title']} (₹{bank_offer['amount']:,} off)")
+            lines.append(f"Bank offer: {bank_offer['title']} (₹{bank_offer['amount']:,} off, non-EMI)")
             lines.append("")
-        for m in in_stock:
+        for m in qualifying:
             if m["base_discount"] > 0:
                 lines.append(f"• {m['name']}: ₹{m['effective']:,} (was ₹{m['marked']:,}, -₹{m['base_discount']:,})")
             else:
                 lines.append(f"• {m['name']}: ₹{m['effective']:,} (in stock)")
             lines.append(f"  {m['url']}")
         message = "\n".join(lines)
-
-        best_base = max((m["base_discount"] for m in in_stock), default=0)
+        best_base = max((m["base_discount"] for m in qualifying), default=0)
         best_amount = max(best_base, bank_offer["amount"] if bank_offer else 0)
-        best_item = max(in_stock, key=lambda x: x["base_discount"]) if in_stock else None
-        click = best_item["url"] if best_item else ""
-        title = f"JioMart iPhone deal: up to ₹{best_amount:,} off"
-
+        best_item = max(qualifying, key=lambda x: x["base_discount"]) if qualifying else None
         requests.post(
             f"https://ntfy.sh/{NTFY_TOPIC}",
             data=message.encode("utf-8"),
             headers={
-                "Title": title,
+                "Title": f"JioMart iPhone deal: up to ₹{best_amount:,} off",
                 "Priority": "urgent",
                 "Tags": "iphone,shopping,rotating_light",
-                "Click": click,
+                "Click": best_item["url"] if best_item else "",
             },
             timeout=15,
         ).raise_for_status()
@@ -309,11 +361,7 @@ def send_ntfy_alert(
         return False
 
 
-def send_email_alert(
-    pincode: str,
-    in_stock: List[Dict[str, Any]],
-    bank_offer: Optional[Dict[str, Any]],
-) -> bool:
+def send_email_alert(pincode: str, qualifying: List[Dict], bank_offer: Optional[Dict]) -> bool:
     sender = os.environ.get("SENDER_EMAIL")
     receiver = os.environ.get("RECEIVER_EMAIL")
     password = os.environ.get("EMAIL_PASSWORD")
@@ -324,9 +372,9 @@ def send_email_alert(
         ist_time = get_ist_now().strftime("%Y-%m-%d %H:%M:%S IST")
         lines = [f"JioMart iPhone deal — pincode {pincode}\n"]
         if bank_offer:
-            lines.append(f"Bank offer active: {bank_offer['title']}")
+            lines.append(f"Bank offer: {bank_offer['title']}")
             lines.append(f"  {bank_offer['description']}\n")
-        for m in in_stock:
+        for m in qualifying:
             if m["base_discount"] > 0:
                 lines.append(f"  • {m['name']}: ₹{m['effective']:,} (was ₹{m['marked']:,}, -₹{m['base_discount']:,})")
             else:
@@ -334,10 +382,8 @@ def send_email_alert(
             lines.append(f"    {m['url']}")
         lines.append(f"\nChecked at: {ist_time}")
         text_body = "\n".join(lines)
-
-        best_base = max((m["base_discount"] for m in in_stock), default=0)
+        best_base = max((m["base_discount"] for m in qualifying), default=0)
         best_amount = max(best_base, bank_offer["amount"] if bank_offer else 0)
-
         msg = MIMEMultipart("alternative")
         msg["Subject"] = f"JioMart iPhone deal: up to ₹{best_amount:,} off — {pincode}"
         msg["From"] = sender
@@ -360,13 +406,12 @@ def check_jiomart_iphone():
     print(f"Min discount: ₹{MIN_DISCOUNT_RS:,}")
     print("=" * 60)
 
-    # Bank offer check is global (not pincode-specific)
     print("\n[Bank Offers]")
     bank_offer = check_bank_offers()
     if bank_offer:
-        print(f"  -> Qualifying offer found: ₹{bank_offer['amount']:,} off (non-EMI, Electronics)")
+        print(f"  -> Qualifying offer: ₹{bank_offer['amount']:,} off (non-EMI, Electronics)")
     else:
-        print(f"  -> No active non-EMI Electronics bank offer >= ₹{MIN_DISCOUNT_RS:,}")
+        print(f"  -> No active non-EMI Electronics offer >= ₹{MIN_DISCOUNT_RS:,}")
 
     any_alerted = False
 
@@ -375,42 +420,50 @@ def check_jiomart_iphone():
         print(f"Pincode: {pincode}")
         print("─" * 40)
 
-        all_in_stock: List[Dict[str, Any]] = []
+        pincode_info = resolve_pincode(pincode)
+        if not pincode_info:
+            print(f"  Could not resolve stores for {pincode}, skipping.")
+            continue
+        pincode_info["pincode"] = pincode
+        print(f"  Stores: {pincode_info['store_ids']}")
+
+        # Discover slugs via vertex search (includes price data)
+        all_slugs: Dict[str, Dict] = {}  # slug → {name, effective, marked}
         for label, query in SEARCH_QUERIES:
-            found = search_in_stock_iphones(label, query, pincode)
-            all_in_stock.extend(found)
+            for item in discover_iphone_slugs(label, query, pincode_info):
+                if item["slug"] not in all_slugs:
+                    all_slugs[item["slug"]] = item
 
-        # Deduplicate by URL
-        seen: set = set()
-        unique_in_stock: List[Dict[str, Any]] = []
-        for m in all_in_stock:
-            if m["url"] not in seen:
-                seen.add(m["url"])
-                unique_in_stock.append(m)
+        if not all_slugs:
+            print(f"  No iPhone slugs found for {pincode}.")
+            continue
 
-        if not unique_in_stock:
+        # Verify each slug with sizes API (pincode-accurate)
+        in_stock: List[Dict[str, Any]] = []
+        for slug, item in all_slugs.items():
+            result = check_slug_stock(slug, item["name"], item["effective"], item["marked"], pincode_info)
+            if result:
+                in_stock.append(result)
+
+        if not in_stock:
             print(f"  No iPhones in stock for {pincode}.")
             continue
 
-        # Items that qualify on base price alone
-        base_qualifying = [m for m in unique_in_stock if m["base_discount"] >= MIN_DISCOUNT_RS]
-
-        # Items qualifying via bank offer (any in-stock iPhone + bank_offer present)
-        bank_qualifying = unique_in_stock if bank_offer else []
-
-        # Merge both qualifying sets (deduplicated)
-        qualifying_urls: set = {m["url"] for m in base_qualifying} | {m["url"] for m in bank_qualifying}
-        qualifying = [m for m in unique_in_stock if m["url"] in qualifying_urls]
+        # Determine which qualify for alerting
+        base_qualifying = [m for m in in_stock if m["base_discount"] >= MIN_DISCOUNT_RS]
+        bank_qualifying = in_stock if bank_offer else []
+        qualifying_urls = {m["url"] for m in base_qualifying} | {m["url"] for m in bank_qualifying}
+        qualifying = [m for m in in_stock if m["url"] in qualifying_urls]
 
         if not qualifying:
-            print(f"  {len(unique_in_stock)} iPhone(s) in stock but no qualifying discount for {pincode}.")
+            print(f"  {len(in_stock)} in stock but no qualifying discount for {pincode}.")
             continue
 
-        print(f"\n  {len(qualifying)} qualifying iPhone(s) found for {pincode}!")
+        print(f"\n  {len(qualifying)} qualifying iPhone(s) for {pincode}!")
         if base_qualifying:
             print(f"  Base discount >={MIN_DISCOUNT_RS:,}: {[m['name'] for m in base_qualifying]}")
         if bank_offer and bank_qualifying:
-            print(f"  Bank offer applicable: ₹{bank_offer['amount']:,} off on {len(bank_qualifying)} item(s)")
+            print(f"  Bank offer: ₹{bank_offer['amount']:,} off on {len(bank_qualifying)} in-stock item(s)")
 
         alert_key = f"jiomart_iphone_discount_{pincode}"
         if not should_send_alert(alert_key):
