@@ -120,6 +120,34 @@ def record_alert(alert_type: str):
     STATE_FILE.write_text(json.dumps(state, indent=2))
 
 
+def _read_state() -> Dict:
+    if STATE_FILE.exists():
+        try:
+            return json.loads(STATE_FILE.read_text())
+        except Exception:
+            pass
+    return {}
+
+
+def _write_state(state: Dict):
+    STATE_DIR.mkdir(exist_ok=True)
+    STATE_FILE.write_text(json.dumps(state, indent=2))
+
+
+def get_nearby_state(pincode: str) -> Optional[str]:
+    return _read_state().get(f"nearby_addr_{pincode}")
+
+
+def set_nearby_state(pincode: str, address: Optional[str]):
+    state = _read_state()
+    key = f"nearby_addr_{pincode}"
+    if address is None:
+        state.pop(key, None)
+    else:
+        state[key] = address
+    _write_state(state)
+
+
 def _base_headers() -> Dict[str, str]:
     return {
         "User-Agent": (
@@ -575,6 +603,41 @@ def send_email_alert(pincode: str, qualifying: List[Dict], bank_offer: Optional[
         return False
 
 
+def _maybe_send_nearby_alert(
+    pincode: str,
+    bank_offer: Dict,
+    nearest: Optional[Dict],
+    any_alerted: bool,
+) -> bool:
+    """
+    Edge-trigger: only alert when the nearby state changes.
+    Silently update state when nearby goes OOS (so the next appearance triggers again).
+    """
+    last_addr = get_nearby_state(pincode)
+    new_addr = nearest["address"] if nearest else None
+
+    if new_addr == last_addr:
+        if new_addr:
+            print(f"  [nearby] Same location as before ({new_addr}), skipping.")
+        # No change — don't alert, don't update state
+        return any_alerted
+
+    # State changed — update regardless of whether we alert
+    set_nearby_state(pincode, new_addr)
+
+    if not nearest:
+        print(f"  [nearby] Nearby stock gone (was {last_addr}).")
+        return any_alerted  # stock disappeared — no alert needed
+
+    # New nearby location found — alert once
+    print(f"  [nearby] New nearby stock at {nearest['address']} (was {last_addr or 'none'}) — alerting")
+    ntfy_ok = send_ntfy_alert(pincode, [], bank_offer, nearest=nearest)
+    email_ok = send_email_alert(pincode, [], bank_offer, nearest=nearest)
+    if ntfy_ok or email_ok:
+        any_alerted = True
+    return any_alerted
+
+
 def check_jiomart_iphone():
     print("=" * 60)
     print(f"JioMart iPhone monitor — {get_ist_now()}")
@@ -614,14 +677,9 @@ def check_jiomart_iphone():
             print(f"  No iPhone slugs found for {pincode}.")
             if bank_offer and JIOMART_LAT and JIOMART_LON:
                 nearest = find_nearest_stock(JIOMART_LAT, JIOMART_LON, pincode_info["polygon_ids"], pincode)
-                if nearest:
-                    alert_key = f"jiomart_iphone_nearby_{pincode}"
-                    if should_send_alert(alert_key):
-                        ntfy_ok = send_ntfy_alert(pincode, [], bank_offer, nearest=nearest)
-                        email_ok = send_email_alert(pincode, [], bank_offer, nearest=nearest)
-                        if ntfy_ok or email_ok:
-                            record_alert(alert_key)
-                            any_alerted = True
+                any_alerted = _maybe_send_nearby_alert(pincode, bank_offer, nearest, any_alerted)
+            else:
+                set_nearby_state(pincode, None)
             continue
 
         # Verify each slug with sizes API (pincode-accurate)
@@ -634,18 +692,10 @@ def check_jiomart_iphone():
         if not in_stock:
             print(f"  No iPhones in stock for {pincode}.")
             if bank_offer and JIOMART_LAT and JIOMART_LON:
-                nearest = find_nearest_stock(
-                    JIOMART_LAT, JIOMART_LON,
-                    pincode_info["polygon_ids"], pincode
-                )
-                if nearest:
-                    alert_key = f"jiomart_iphone_nearby_{pincode}"
-                    if should_send_alert(alert_key):
-                        ntfy_ok = send_ntfy_alert(pincode, [], bank_offer, nearest=nearest)
-                        email_ok = send_email_alert(pincode, [], bank_offer, nearest=nearest)
-                        if ntfy_ok or email_ok:
-                            record_alert(alert_key)
-                            any_alerted = True
+                nearest = find_nearest_stock(JIOMART_LAT, JIOMART_LON, pincode_info["polygon_ids"], pincode)
+                any_alerted = _maybe_send_nearby_alert(pincode, bank_offer, nearest, any_alerted)
+            else:
+                set_nearby_state(pincode, None)
             continue
 
         # Determine which qualify for alerting
