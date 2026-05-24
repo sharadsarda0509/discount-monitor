@@ -64,6 +64,20 @@ SEARCH_QUERIES = [
 ]
 
 JIOMART_BASE = "https://www.jiomart.com/product"
+NOMINATIM_URL = "https://nominatim.openstreetmap.org/reverse"
+
+# At Bangalore (~13°N): 1° lat ≈ 111 km, 1° lon ≈ 108.2 km
+_LAT_KM = 111.0
+_LON_KM = 108.2
+
+# Grid at ~110m steps, max 500m — sorted by distance so we always try nearest first
+_NEARBY_OFFSETS = sorted(
+    [(dl, dn)
+     for dl in [-0.004, -0.003, -0.002, -0.001, 0.0, 0.001, 0.002, 0.003, 0.004]
+     for dn in [-0.004, -0.003, -0.002, -0.001, 0.0, 0.001, 0.002, 0.003, 0.004]
+     if dl != 0.0 or dn != 0.0],
+    key=lambda x: (x[0] * _LAT_KM) ** 2 + (x[1] * _LON_KM) ** 2,
+)
 
 _RS_RE = re.compile(r"[Rr]s\.?\s*([\d,]+)\s*(?:[Oo]ff|[Dd]iscount|[Ii]nstant|[Cc]ashback)")
 
@@ -349,12 +363,123 @@ def check_bank_offers() -> Optional[Dict[str, Any]]:
     return best
 
 
-def send_ntfy_alert(pincode: str, qualifying: List[Dict], bank_offer: Optional[Dict]) -> bool:
+def _reverse_geocode(lat: float, lon: float) -> str:
+    try:
+        r = requests.get(
+            NOMINATIM_URL,
+            params={"lat": lat, "lon": lon, "format": "json"},
+            headers={"User-Agent": "jiomart-iphone-monitor/1.0"},
+            timeout=10,
+        )
+        r.raise_for_status()
+        addr = r.json().get("address", {})
+        parts = [p for p in [
+            addr.get("road") or addr.get("neighbourhood") or addr.get("hamlet"),
+            addr.get("suburb") or addr.get("locality") or addr.get("village"),
+            addr.get("postcode"),
+        ] if p]
+        return ", ".join(parts) if parts else f"{lat:.5f},{lon:.5f}"
+    except Exception:
+        return f"{lat:.5f},{lon:.5f}"
+
+
+def find_nearest_stock(
+    user_lat: str,
+    user_lon: str,
+    user_polygon_ids: List[str],
+    pincode: str,
+) -> Optional[Dict]:
+    """
+    Scan a 500m grid around user_lat/user_lon to find the nearest zone where
+    any iPhone is in stock. Discovers slugs fresh at each new zone (vertex search
+    is zone-sensitive — it only returns items stocked at that store).
+    Returns hit info or None.
+    """
+    base_lat, base_lon = float(user_lat), float(user_lon)
+    MAX_KM = 0.5
+    seen_polygons: set = set(user_polygon_ids)
+
+    print(f"  [nearby] Scanning ≤{int(MAX_KM * 1000)}m grid for nearest in-stock zone...")
+
+    for d_lat, d_lon in _NEARBY_OFFSETS:
+        dist_km = ((d_lat * _LAT_KM) ** 2 + (d_lon * _LON_KM) ** 2) ** 0.5
+        if dist_km > MAX_KM:
+            break  # sorted — everything after is farther
+
+        n_lat = str(round(base_lat + d_lat, 7))
+        n_lon = str(round(base_lon + d_lon, 7))
+
+        try:
+            r = requests.get(
+                DELIVERY_PROMISE_URL,
+                headers=make_headers(pincode, n_lat, n_lon, []),
+                timeout=10,
+            )
+            r.raise_for_status()
+            dp_items = r.json().get("items", [])
+        except Exception:
+            continue
+
+        polygon_ids: List[str] = []
+        for s in dp_items:
+            for j in s.get("journey_wise_promise", []):
+                pid = (j.get("meta") or {}).get("polygon_id")
+                if pid:
+                    polygon_ids.append(pid)
+
+        if polygon_ids and set(polygon_ids).issubset(seen_polygons):
+            continue  # same zone as user's — skip
+        seen_polygons.update(polygon_ids)
+
+        store_ids = [str(s["uid"]) for s in dp_items]
+        store_name = dp_items[0].get("code", "") if dp_items else ""
+
+        nearby_info = {
+            "lat": n_lat, "lon": n_lon,
+            "store_ids": store_ids, "polygon_ids": polygon_ids,
+            "pincode": pincode,
+        }
+
+        # Discover iPhone slugs at this new zone (vertex search is store-specific)
+        zone_slugs: Dict[str, Dict] = {}
+        for label, query in SEARCH_QUERIES:
+            for item in discover_iphone_slugs(label, query, nearby_info):
+                if item["slug"] not in zone_slugs:
+                    zone_slugs[item["slug"]] = item
+
+        if not zone_slugs:
+            continue
+
+        # Check each slug for availability at this zone
+        for slug, item in zone_slugs.items():
+            result = check_slug_stock(slug, item["name"], item["effective"], item["marked"], nearby_info)
+            if result:
+                address = _reverse_geocode(float(n_lat), float(n_lon))
+                print(f"  [nearby] IN STOCK at {dist_km:.2f}km: {result['name']} qty={result['qty']}  {address}")
+                return {
+                    "dist_km": round(dist_km, 2),
+                    "lat": n_lat,
+                    "lon": n_lon,
+                    "store": store_name,
+                    "qty": result["qty"],
+                    "address": address,
+                    "name": result["name"],
+                    "url": result["url"],
+                }
+
+    print("  [nearby] No stock found within 500m.")
+    return None
+
+
+def send_ntfy_alert(pincode: str, qualifying: List[Dict], bank_offer: Optional[Dict], nearest: Optional[Dict] = None) -> bool:
     if not NTFY_TOPIC:
         print(f"[{get_ist_now()}] ntfy not configured")
         return False
     try:
-        lines = [f"JioMart iPhone deal — pincode {pincode}!\n"]
+        if qualifying:
+            lines = [f"JioMart iPhone deal — pincode {pincode}!\n"]
+        else:
+            lines = [f"JioMart bank offer active — your zone OOS but nearby stock found!\n"]
         if bank_offer:
             lines.append(f"Bank offer: {bank_offer['title']} (₹{bank_offer['amount']:,} off, non-EMI)")
             lines.append("")
@@ -365,18 +490,29 @@ def send_ntfy_alert(pincode: str, qualifying: List[Dict], bank_offer: Optional[D
             else:
                 lines.append(f"• {m['name']}: ₹{m['effective']:,} (in stock{qty_str})")
             lines.append(f"  {m['url']}")
+        if nearest:
+            lines.append(f"\n⚡ Nearest stock: ~{nearest['dist_km']:.2f}km away")
+            lines.append(f"  {nearest['name']}  qty={nearest['qty']}")
+            lines.append(f"  Address: {nearest['address']}")
+            lines.append(f"  Set this as your JioMart delivery address, then order:")
+            lines.append(f"  {nearest['url']}")
         message = "\n".join(lines)
         best_base = max((m["base_discount"] for m in qualifying), default=0)
         best_amount = max(best_base, bank_offer["amount"] if bank_offer else 0)
         best_item = max(qualifying, key=lambda x: x["base_discount"]) if qualifying else None
+        click_url = (best_item["url"] if best_item else nearest["url"]) if nearest or best_item else ""
+        if qualifying:
+            title = f"JioMart iPhone deal: up to ₹{best_amount:,} off"
+        else:
+            title = f"JioMart iPhone: nearby stock {nearest['dist_km']:.2f}km away — bank offer active"
         requests.post(
             f"https://ntfy.sh/{NTFY_TOPIC}",
             data=message.encode("utf-8"),
             headers={
-                "Title": f"JioMart iPhone deal: up to ₹{best_amount:,} off",
+                "Title": title,
                 "Priority": "urgent",
                 "Tags": "iphone,shopping,rotating_light",
-                "Click": best_item["url"] if best_item else "",
+                "Click": click_url,
             },
             timeout=15,
         ).raise_for_status()
@@ -387,7 +523,7 @@ def send_ntfy_alert(pincode: str, qualifying: List[Dict], bank_offer: Optional[D
         return False
 
 
-def send_email_alert(pincode: str, qualifying: List[Dict], bank_offer: Optional[Dict]) -> bool:
+def send_email_alert(pincode: str, qualifying: List[Dict], bank_offer: Optional[Dict], nearest: Optional[Dict] = None) -> bool:
     sender = os.environ.get("SENDER_EMAIL")
     receiver = os.environ.get("RECEIVER_EMAIL")
     password = os.environ.get("EMAIL_PASSWORD")
@@ -396,7 +532,10 @@ def send_email_alert(pincode: str, qualifying: List[Dict], bank_offer: Optional[
         return False
     try:
         ist_time = get_ist_now().strftime("%Y-%m-%d %H:%M:%S IST")
-        lines = [f"JioMart iPhone deal — pincode {pincode}\n"]
+        if qualifying:
+            lines = [f"JioMart iPhone deal — pincode {pincode}\n"]
+        else:
+            lines = [f"JioMart bank offer active — your zone OOS, nearby stock found!\n"]
         if bank_offer:
             lines.append(f"Bank offer: {bank_offer['title']}")
             lines.append(f"  {bank_offer['description']}\n")
@@ -407,12 +546,22 @@ def send_email_alert(pincode: str, qualifying: List[Dict], bank_offer: Optional[
             else:
                 lines.append(f"  • {m['name']}: ₹{m['effective']:,} (in stock{qty_str})")
             lines.append(f"    {m['url']}")
+        if nearest:
+            lines.append(f"\nNearest in-stock zone: ~{nearest['dist_km']:.2f}km away")
+            lines.append(f"  {nearest['name']}  qty={nearest['qty']}")
+            lines.append(f"  Address: {nearest['address']}")
+            lines.append(f"  Set this as your JioMart delivery address, then order:")
+            lines.append(f"  {nearest['url']}")
         lines.append(f"\nChecked at: {ist_time}")
         text_body = "\n".join(lines)
         best_base = max((m["base_discount"] for m in qualifying), default=0)
         best_amount = max(best_base, bank_offer["amount"] if bank_offer else 0)
         msg = MIMEMultipart("alternative")
-        msg["Subject"] = f"JioMart iPhone deal: up to ₹{best_amount:,} off — {pincode}"
+        if qualifying:
+            subject = f"JioMart iPhone deal: up to ₹{best_amount:,} off — {pincode}"
+        else:
+            subject = f"JioMart iPhone: nearby stock {nearest['dist_km']:.2f}km — bank offer ₹{best_amount:,} off"
+        msg["Subject"] = subject
         msg["From"] = sender
         msg["To"] = receiver
         msg.attach(MIMEText(text_body, "plain"))
@@ -463,6 +612,16 @@ def check_jiomart_iphone():
 
         if not all_slugs:
             print(f"  No iPhone slugs found for {pincode}.")
+            if bank_offer and JIOMART_LAT and JIOMART_LON:
+                nearest = find_nearest_stock(JIOMART_LAT, JIOMART_LON, pincode_info["polygon_ids"], pincode)
+                if nearest:
+                    alert_key = f"jiomart_iphone_nearby_{pincode}"
+                    if should_send_alert(alert_key):
+                        ntfy_ok = send_ntfy_alert(pincode, [], bank_offer, nearest=nearest)
+                        email_ok = send_email_alert(pincode, [], bank_offer, nearest=nearest)
+                        if ntfy_ok or email_ok:
+                            record_alert(alert_key)
+                            any_alerted = True
             continue
 
         # Verify each slug with sizes API (pincode-accurate)
@@ -474,6 +633,19 @@ def check_jiomart_iphone():
 
         if not in_stock:
             print(f"  No iPhones in stock for {pincode}.")
+            if bank_offer and JIOMART_LAT and JIOMART_LON:
+                nearest = find_nearest_stock(
+                    JIOMART_LAT, JIOMART_LON,
+                    pincode_info["polygon_ids"], pincode
+                )
+                if nearest:
+                    alert_key = f"jiomart_iphone_nearby_{pincode}"
+                    if should_send_alert(alert_key):
+                        ntfy_ok = send_ntfy_alert(pincode, [], bank_offer, nearest=nearest)
+                        email_ok = send_email_alert(pincode, [], bank_offer, nearest=nearest)
+                        if ntfy_ok or email_ok:
+                            record_alert(alert_key)
+                            any_alerted = True
             continue
 
         # Determine which qualify for alerting
