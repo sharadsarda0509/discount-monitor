@@ -530,9 +530,9 @@ def send_ntfy_alert(pincode: str, qualifying: List[Dict], bank_offer: Optional[D
         best_item = max(qualifying, key=lambda x: x["base_discount"]) if qualifying else None
         click_url = (best_item["url"] if best_item else nearest["url"]) if nearest or best_item else ""
         if qualifying:
-            title = f"JioMart iPhone deal: up to ₹{best_amount:,} off"
+            title = f"JioMart iPhone deal: up to Rs.{best_amount:,} off"
         else:
-            title = f"JioMart iPhone: nearby stock {nearest['dist_km']:.2f}km away — bank offer active"
+            title = f"JioMart iPhone: nearby stock {nearest['dist_km']:.2f}km away - bank offer active"
         requests.post(
             f"https://ntfy.sh/{NTFY_TOPIC}",
             data=message.encode("utf-8"),

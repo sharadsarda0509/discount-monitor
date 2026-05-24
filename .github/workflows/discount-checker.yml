@@ -70,25 +70,45 @@ jobs:
         continue-on-error: true
 
       - name: Check Apple iPhone 16 same-day pickup (Saket + Noida / 110017)
+        if: false  # disabled — replaced by iPhone 17 monitor below
         env:
           SENDER_EMAIL: ${{ secrets.SENDER_EMAIL }}
           RECEIVER_EMAIL: ${{ secrets.RECEIVER_EMAIL }}
           EMAIL_PASSWORD: ${{ secrets.EMAIL_PASSWORD }}
           NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
-          ALERT_COOLDOWN_HOURS: "12"
           APPLE_PINCODE: "110017"
           APPLE_STORE_IDS: "R756,R787"
-          # Default: same-day (daily) pickup only. For a fixed date, set e.g. APPLE_PICKUP_DATES: "20260331".
-          # Cookie header from DevTools, captured from the BAG PAGE after: add to cart →
-          # enter PIN 110017 → select Apple Saket or Noida as pickup store.
-          # Key cookies: as_loc (Delhi location token), rtsid ({IN={t=a;i=R756;}}), as_pcts.
-          # Get from Network tab → any apple.com/in/shop request → Request Headers → Cookie.
-          APPLE_COOKIES: ${{ secrets.APPLE_COOKIES }}
           APPLE_COOLDOWN_HOURS: "0.083"
           APPLE_SAME_DAY_ONLY: "true"
           APPLE_REQUIRE_SAKET: "true"
         run: |
           python check_apple_iphone16.py
+        continue-on-error: true
+
+      - name: Check Apple iPhone 17 same-day pickup (Saket + Noida / 110017)
+        env:
+          SENDER_EMAIL: ${{ secrets.SENDER_EMAIL }}
+          RECEIVER_EMAIL: ${{ secrets.RECEIVER_EMAIL }}
+          EMAIL_PASSWORD: ${{ secrets.EMAIL_PASSWORD }}
+          NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
+          APPLE_PINCODE: "110017"
+          APPLE_STORE_IDS: "R756,R787"
+          APPLE_COOLDOWN_HOURS: "0.083"
+          APPLE_SAME_DAY_ONLY: "true"
+          APPLE_REQUIRE_SAKET: "true"
+        run: |
+          python check_apple_iphone17.py
+        continue-on-error: true
+
+      - name: Check Shopsy Flipkart Physical Gift Card stock (Rs.1000)
+        env:
+          SENDER_EMAIL: ${{ secrets.SENDER_EMAIL }}
+          RECEIVER_EMAIL: ${{ secrets.RECEIVER_EMAIL }}
+          EMAIL_PASSWORD: ${{ secrets.EMAIL_PASSWORD }}
+          NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
+          ALERT_COOLDOWN_HOURS: "1"
+        run: |
+          python check_shopsy_giftcard.py
         continue-on-error: true
 
       - name: Check MagicPin PhonePe Rs.10000 voucher stock
