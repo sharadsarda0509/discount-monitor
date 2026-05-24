@@ -109,9 +109,15 @@ def fetch_product_price():
         print(f"[{get_ist_now()}] Successfully fetched page (Status: {response.status_code})")
         
         soup = BeautifulSoup(response.text, 'html.parser')
-        
+
+        # Detect CAPTCHA / bot-check page
+        if soup.find('form', {'action': re.compile(r'validateCaptcha', re.I)}) or \
+                'Enter the characters you see below' in response.text:
+            print(f"[{get_ist_now()}] Amazon served a CAPTCHA page -- skipping this run")
+            return None
+
         price = None
-        
+
         # Method 1: Try JSON-LD structured data (most reliable)
         json_ld_scripts = soup.find_all('script', {'type': 'application/ld+json'})
         for script in json_ld_scripts:
@@ -126,10 +132,10 @@ def fetch_product_price():
                             break
             except (json.JSONDecodeError, ValueError, KeyError):
                 continue
-        
+
         # Method 2: Parse TWISTER_PLUS_INLINE_STATE JSON (Amazon's dynamic data)
         if not price:
-            twister_script = soup.find('script', text=re.compile(r'TWISTER_PLUS_INLINE_STATE'))
+            twister_script = soup.find('script', string=re.compile(r'TWISTER_PLUS_INLINE_STATE'))
             if twister_script:
                 match = re.search(r'displayPrice["\']:\s*["\'][\s₹]*([0-9,]+)', twister_script.string)
                 if match:
@@ -139,37 +145,48 @@ def fetch_product_price():
                         print(f"[{get_ist_now()}] Found price in TWISTER data: Rs.{price}")
                     except ValueError:
                         pass
-        
-        # Method 3: CSS selectors (fallback)
+
+        # Method 3: corePriceDisplay / apexPriceToPay (current Amazon structure)
         if not price:
-            price_element = soup.find('span', {'class': 'a-price-whole'})
-            if price_element:
-                price_text = price_element.text.strip().replace(',', '').replace('.', '')
+            for sel in [
+                {'id': 'corePriceDisplay_desktop_feature_div'},
+                {'id': 'apex_desktop'},
+            ]:
+                container = soup.find('div', sel)
+                if container:
+                    whole = container.find('span', {'class': 'a-price-whole'})
+                    if whole:
+                        price_text = whole.text.strip().replace(',', '').rstrip('.')
+                        try:
+                            price = int(price_text)
+                            print(f"[{get_ist_now()}] Found price in {sel}: Rs.{price}")
+                            break
+                        except ValueError:
+                            pass
+
+        # Method 4: any a-price-whole on page
+        if not price:
+            for el in soup.find_all('span', {'class': 'a-price-whole'}):
+                price_text = el.text.strip().replace(',', '').rstrip('.')
                 try:
-                    price = int(price_text)
-                    print(f"[{get_ist_now()}] Found price in CSS selector: Rs.{price}")
+                    candidate = int(price_text)
+                    if 100 < candidate < 100000:
+                        price = candidate
+                        print(f"[{get_ist_now()}] Found price via a-price-whole: Rs.{price}")
+                        break
+                except ValueError:
+                    continue
+
+        # Method 5: regex over raw HTML as last resort
+        if not price:
+            match = re.search(r'"priceAmount"\s*:\s*([\d.]+)', response.text)
+            if match:
+                try:
+                    price = int(float(match.group(1)))
+                    print(f"[{get_ist_now()}] Found price via priceAmount JSON: Rs.{price}")
                 except ValueError:
                     pass
-        
-        # Method 4: Search in various Amazon price containers
-        if not price:
-            for class_name in ['a-price', 'apexPriceToPay', 'priceBlockBuyingPriceString']:
-                elements = soup.find_all('span', {'class': class_name})
-                for elem in elements:
-                    text = elem.text.strip()
-                    match = re.search(r'[\d,]+', text)
-                    if match:
-                        price_text = match.group().replace(',', '')
-                        try:
-                            price = int(float(price_text))
-                            if price > 0:
-                                print(f"[{get_ist_now()}] Found price in class '{class_name}': Rs.{price}")
-                                break
-                        except ValueError:
-                            continue
-                if price:
-                    break
-        
+
         return price
         
     except requests.RequestException as e:
