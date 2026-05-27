@@ -298,11 +298,11 @@ def check_zepto_amazon():
             f"[{get_ist_now()}] {p['name'][:50]:50s}  {status:12s}  "
             f"Rs.{p['selling_price']:6d}  {disc}"
         )
-        if p["in_stock"] and p["discount_pct"] >= MIN_DISCOUNT_PCT:
+        if p["in_stock"] and p["discount_pct"] > MIN_DISCOUNT_PCT:
             matches.append(p)
 
     if not matches:
-        print(f"[{get_ist_now()}] No Amazon Pay gift cards with >={MIN_DISCOUNT_PCT}% discount.")
+        print(f"[{get_ist_now()}] No Amazon Pay gift cards with >{MIN_DISCOUNT_PCT}% discount.")
         return False
 
     print(f"[{get_ist_now()}] MATCH: {[m['name'] for m in matches]}")
