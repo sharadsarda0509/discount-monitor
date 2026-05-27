@@ -24,7 +24,6 @@ NTFY_TOPIC = os.environ.get('NTFY_TOPIC', '')
 PRODUCT_ID = "6cf5b942-e260-11f0-a1d3-0636a7656735"
 PRODUCT_URL = f"https://store.oneplay.in/view/phonepe-gift-card-7500-{PRODUCT_ID}"
 API_URL = f"https://commerce-services.oneplay.in/v1/content/details/info/{PRODUCT_ID}"
-TARGET_DISCOUNT = 2.0
 
 try:
     import requests
@@ -89,9 +88,9 @@ def fetch_product_data():
         return None
 
 
-def extract_discount(product_data):
+def extract_product_info(product_data):
     if not product_data:
-        return None, None
+        return None, None, None
     try:
         info = (product_data.get('response') or {}).get('info') or {}
         product_name = info.get('title', 'Unknown')
@@ -104,13 +103,13 @@ def extract_discount(product_data):
         print(f"[{get_ist_now()}] Original Price: Rs.{original_price}")
         print(f"[{get_ist_now()}] Discount: {discount}%")
 
-        if discount > 0 and current_price > 0:
-            return float(discount), int(current_price)
-        print(f"[{get_ist_now()}] No discount available")
-        return None, None
+        if current_price > 0:
+            return float(discount), int(current_price), product_name
+        print(f"[{get_ist_now()}] Product not available (price=0)")
+        return None, None, None
     except Exception as e:
         print(f"[{get_ist_now()}] Error parsing data: {e}")
-        return None, None
+        return None, None, None
 
 
 def send_ntfy_alert(discount, current_price=None):
@@ -118,8 +117,12 @@ def send_ntfy_alert(discount, current_price=None):
         print(f"[{get_ist_now()}] ntfy not configured (NTFY_TOPIC empty)")
         return False
     try:
-        title = f"PhonePe GC Rs.7500: {discount}% OFF!"
-        message = f"PhonePe Gift Card Rs.7500 is now {discount}% OFF"
+        if discount and discount > 0:
+            title = f"PhonePe GC Rs.7500: {discount}% OFF!"
+            message = f"PhonePe Gift Card Rs.7500 is now {discount}% OFF"
+        else:
+            title = "PhonePe GC Rs.7500: in stock!"
+            message = "PhonePe Gift Card Rs.7500 is available"
         if current_price:
             message += f"\nPrice: Rs.{current_price}"
         message += f"\n\n{PRODUCT_URL}"
@@ -194,25 +197,20 @@ def check_oneplay_phonepe():
         print(f"[{get_ist_now()}] Failed to fetch product data")
         return False
 
-    discount, current_price = extract_discount(product_data)
-    if discount is None:
-        print(f"[{get_ist_now()}] No discount info")
+    discount, current_price, name = extract_product_info(product_data)
+    if current_price is None:
+        print(f"[{get_ist_now()}] Product not available / could not parse")
         return False
 
-    print(f"[{get_ist_now()}] Discount: {discount}% | Target: {TARGET_DISCOUNT}%")
+    print(f"[{get_ist_now()}] In stock at Rs.{current_price} ({discount}% off)")
 
-    if discount >= TARGET_DISCOUNT:
-        print(f"[{get_ist_now()}] Target discount reached!")
-        if not should_send_alert('oneplay_phonepe'):
-            return False
-        ntfy_ok = send_ntfy_alert(discount, current_price)
-        email_ok = send_email_alert(discount, current_price)
-        if ntfy_ok or email_ok:
-            record_alert('oneplay_phonepe')
-        return ntfy_ok or email_ok
-    else:
-        print(f"[{get_ist_now()}] Target not reached. Waiting...")
+    if not should_send_alert('oneplay_phonepe'):
         return False
+    ntfy_ok = send_ntfy_alert(discount, current_price)
+    email_ok = send_email_alert(discount, current_price)
+    if ntfy_ok or email_ok:
+        record_alert('oneplay_phonepe')
+    return ntfy_ok or email_ok
 
 
 if __name__ == "__main__":

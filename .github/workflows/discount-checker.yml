@@ -120,7 +120,7 @@ jobs:
           python check_magicpin_phonepe.py
         continue-on-error: true
 
-      - name: Check OnePlay PhonePe Gift Card Rs.7500 discount
+      - name: Check OnePlay PhonePe Gift Card Rs.7500 stock
         env:
           SENDER_EMAIL: ${{ secrets.SENDER_EMAIL }}
           RECEIVER_EMAIL: ${{ secrets.RECEIVER_EMAIL }}
@@ -129,6 +129,31 @@ jobs:
           ALERT_COOLDOWN_HOURS: "12"
         run: |
           python check_oneplay_phonepe.py
+        continue-on-error: true
+
+      - name: Check MagicPin Amazon Pay Rs.5000/10000 in stock with discount
+        env:
+          SENDER_EMAIL: ${{ secrets.SENDER_EMAIL }}
+          RECEIVER_EMAIL: ${{ secrets.RECEIVER_EMAIL }}
+          EMAIL_PASSWORD: ${{ secrets.EMAIL_PASSWORD }}
+          NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
+          ALERT_COOLDOWN_HOURS: "1"
+          MAGICPIN_AMAZON_MIN_DISCOUNT: "2.0"
+        run: |
+          python check_magicpin_amazon.py
+        continue-on-error: true
+
+      - name: Check Blinkit Amazon Pay Physical Gift Card stock (560035)
+        env:
+          SENDER_EMAIL: ${{ secrets.SENDER_EMAIL }}
+          RECEIVER_EMAIL: ${{ secrets.RECEIVER_EMAIL }}
+          EMAIL_PASSWORD: ${{ secrets.EMAIL_PASSWORD }}
+          NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
+          ALERT_COOLDOWN_HOURS: "1"
+          BLINKIT_LAT: ${{ secrets.BLINKIT_LAT }}
+          BLINKIT_LON: ${{ secrets.BLINKIT_LON }}
+        run: |
+          python check_blinkit_amazon.py
         continue-on-error: true
 
       - name: Check JioMart iPhone discount (15/16/17 — non-EMI bank offer or base discount)
@@ -146,6 +171,18 @@ jobs:
           JIOMART_LON: ${{ secrets.JIOMART_LON }}
         run: |
           python check_jiomart_iphone.py
+        continue-on-error: true
+
+      - name: Check Zepto Amazon Pay Gift Card discount (560035)
+        env:
+          SENDER_EMAIL: ${{ secrets.SENDER_EMAIL }}
+          RECEIVER_EMAIL: ${{ secrets.RECEIVER_EMAIL }}
+          EMAIL_PASSWORD: ${{ secrets.EMAIL_PASSWORD }}
+          NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
+          ALERT_COOLDOWN_HOURS: "1"
+          ZEPTO_MIN_DISCOUNT: "1.0"
+        run: |
+          python check_zepto_amazon.py
         continue-on-error: true
 
       - name: Check JioMart iPhone 16 Pro Max 256GB stock (560035)
