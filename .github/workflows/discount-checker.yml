@@ -126,7 +126,7 @@ jobs:
           RECEIVER_EMAIL: ${{ secrets.RECEIVER_EMAIL }}
           EMAIL_PASSWORD: ${{ secrets.EMAIL_PASSWORD }}
           NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
-          ALERT_COOLDOWN_HOURS: "12"
+          ALERT_COOLDOWN_HOURS: "24"
         run: |
           python check_oneplay_phonepe.py
         continue-on-error: true
@@ -179,7 +179,7 @@ jobs:
           RECEIVER_EMAIL: ${{ secrets.RECEIVER_EMAIL }}
           EMAIL_PASSWORD: ${{ secrets.EMAIL_PASSWORD }}
           NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
-          ALERT_COOLDOWN_HOURS: "1"
+          ALERT_COOLDOWN_HOURS: "24"
           ZEPTO_MIN_DISCOUNT: "1.0"
         run: |
           python check_zepto_amazon.py
