@@ -74,11 +74,23 @@ def record_alert(alert_type: str):
     STATE_FILE.write_text(json.dumps(state, indent=2))
 
 try:
-    import requests
+    from curl_cffi import requests as cffi_requests
     from bs4 import BeautifulSoup
+    _SESSION = cffi_requests.Session(impersonate="chrome120")
 except ImportError:
-    print("Error: Required packages not installed. Run: pip install -r requirements.txt")
-    sys.exit(1)
+    try:
+        import requests as _fallback_requests
+        from bs4 import BeautifulSoup
+        _SESSION = None
+    except ImportError:
+        print("Error: Required packages not installed. Run: pip install -r requirements.txt")
+        sys.exit(1)
+
+
+def _get(url, **kwargs):
+    if _SESSION is not None:
+        return _SESSION.get(url, **kwargs)
+    return _fallback_requests.get(url, **kwargs)
 
 
 # Configuration
@@ -104,7 +116,7 @@ def fetch_product_price():
     
     try:
         print(f"[{get_ist_now()}] Fetching Amazon product page...")
-        response = requests.get(PRODUCT_URL, headers=headers, timeout=30)
+        response = _get(PRODUCT_URL, headers=headers, timeout=30)
         response.raise_for_status()
         print(f"[{get_ist_now()}] Successfully fetched page (Status: {response.status_code})")
         
