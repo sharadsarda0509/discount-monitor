@@ -3,13 +3,13 @@
 Zepto -- Amazon Pay Gift Card discount monitor for pincode 560035.
 
 Flow:
-  1. GET https://www.zepto.com/ to obtain fresh anonymous session cookies
-     (session_id, device_id, csrfSecret, XSRF-TOKEN)
+  1. GET https://www.zepto.com/ with the user's device_id pre-seeded to obtain
+     fresh session cookies (session_id, csrfSecret, XSRF-TOKEN)
   2. Compute request-signature = SHA-256(sorted {body|deviceId|method|requestId|secret|url})
   3. POST /user-search-service/api/v3/search and parse organic results
 
 The 1% discount is only visible to unauthenticated (anonymous) sessions --
-this script intentionally calls the API without logging in.
+this script intentionally calls the API without logging in (x-without-bearer: true).
 Store IDs are hardcoded for pincode 560035 (South Bengaluru, Vijayanagar).
 """
 
@@ -51,6 +51,10 @@ SEARCH_PATH = "/user-search-service/api/v3/search"
 # Store IDs for pincode 560035 (South Bengaluru) — stable physical store identifiers.
 _STORE_ID = "6f08827d-5bea-4c32-8bea-ba8a34ae7ed9"
 _STORE_IDS = f"{_STORE_ID},774a725c-2c4b-4dc2-94d1-72b737f7e1f6"
+
+# Stable device identifier from the user's browser session — keeps requests
+# consistently attributed to the same device across runs.
+_DEVICE_ID = "6fea3bb4-0ac3-446e-9df3-17d690e0f647"
 
 
 def get_ist_now():
@@ -110,7 +114,8 @@ def _sign(method: str, url_path: str, request_id: str, device_id: str, xsrf: str
 
 
 def _get_session_cookies() -> Dict[str, str]:
-    """Load the Zepto homepage to obtain fresh anonymous session cookies."""
+    """Load the Zepto homepage with the user's device_id pre-seeded to get fresh XSRF tokens."""
+    _SESSION.cookies.set("device_id", _DEVICE_ID, domain="www.zepto.com")
     _SESSION.get(
         "https://www.zepto.com/",
         headers={
@@ -123,7 +128,10 @@ def _get_session_cookies() -> Dict[str, str]:
         },
         timeout=30,
     )
-    return dict(_SESSION.cookies.items())
+    cookies = dict(_SESSION.cookies.items())
+    # Ensure our device_id is used even if the server overwrites it
+    cookies["device_id"] = _DEVICE_ID
+    return cookies
 
 
 def search_products(cookies: Dict[str, str]) -> List[Dict[str, Any]]:

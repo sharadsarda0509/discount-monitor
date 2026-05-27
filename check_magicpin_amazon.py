@@ -143,7 +143,7 @@ def send_ntfy_alert(matches: List[Dict[str, Any]]) -> bool:
             f"https://ntfy.sh/{NTFY_TOPIC}",
             data=message.encode("utf-8"),
             headers={
-                "Title": f"Amazon Pay GC in stock: {', '.join(m['name'] for m in matches)}",
+                "Title": f"MagicPin: Amazon Pay GC in stock: {', '.join(m['name'] for m in matches)}",
                 "Priority": "high",
                 "Tags": "amazon,voucher,magicpin",
                 "Click": PAGE_URL,
