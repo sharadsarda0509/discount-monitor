@@ -46,8 +46,8 @@ STATE_FILE = STATE_DIR / "last_alert.json"
 NTFY_TOPIC = os.environ.get("NTFY_TOPIC", "")
 
 # Default coords for Bengaluru 560035 (Vijayanagar area)
-LAT = float(os.environ.get("BLINKIT_LAT", "12.9822"))
-LON = float(os.environ.get("BLINKIT_LON", "77.5392"))
+LAT = float(os.environ.get("BLINKIT_LAT") or "12.9822")
+LON = float(os.environ.get("BLINKIT_LON") or "77.5392")
 
 # Public guest auth key — same for all unauthenticated sessions.
 # Blinkit's /v2/accounts/auth_key/ endpoint requires existing browser state to refresh;
