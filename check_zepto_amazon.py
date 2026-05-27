@@ -50,12 +50,11 @@ SEARCH_URL = "https://www.zepto.com/search?query=amazon+pay+gift+card"
 API_BASE = "https://bff-gateway.zepto.com"
 SEARCH_PATH = "/user-search-service/api/v3/search"
 
-# Store IDs for South Bengaluru 560035 area — the only zone that stocks
-# the Amazon Pay Gift Card Black Box variant at a discount for anonymous users.
-# Your home store (b4dc8d65...) has Amazon Pay cards at 0% and requires auth
-# to be visible, so it can't be monitored here.
-_STORE_ID = "6f08827d-5bea-4c32-8bea-ba8a34ae7ed9"
-_STORE_IDS = f"{_STORE_ID},774a725c-2c4b-4dc2-94d1-72b737f7e1f6"
+# Store IDs for home delivery address (BLR-BELLANDUR - 2, 80 Trees Apartment,
+# lat=12.9176162 lon=77.6979). Amazon Pay Gift Card Black Box is available
+# at 1% off for anonymous (guest) requests — not visible when logged in.
+_STORE_ID = "0f5f31f2-f764-498a-9cc5-606cf82f4f2e"
+_STORE_IDS = f"{_STORE_ID},38caa147-31a6-4fae-a5b6-1c21d1bbfa1d"
 
 # Stable device identifier from the user's browser session.
 _DEVICE_ID = "6fea3bb4-0ac3-446e-9df3-17d690e0f647"
