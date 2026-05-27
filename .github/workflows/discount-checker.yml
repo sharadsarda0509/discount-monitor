@@ -181,6 +181,11 @@ jobs:
           NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
           ALERT_COOLDOWN_HOURS: "24"
           ZEPTO_MIN_DISCOUNT: "1.0"
+          # Set these secrets when GH Actions IP is blocked by Zepto bot detection.
+          # Grab fresh values from browser DevTools → Application → Cookies on zepto.com.
+          ZEPTO_SESSION_ID: ${{ secrets.ZEPTO_SESSION_ID }}
+          ZEPTO_XSRF_TOKEN: ${{ secrets.ZEPTO_XSRF_TOKEN }}
+          ZEPTO_CSRF_SECRET: ${{ secrets.ZEPTO_CSRF_SECRET }}
         run: |
           python check_zepto_amazon.py
         continue-on-error: true

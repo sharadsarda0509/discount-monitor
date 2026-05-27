@@ -3,8 +3,9 @@
 Zepto -- Amazon Pay Gift Card discount monitor for pincode 560035.
 
 Flow:
-  1. GET https://www.zepto.com/ with the user's device_id pre-seeded to obtain
-     fresh session cookies (session_id, csrfSecret, XSRF-TOKEN)
+  1. Generate random session_id, csrfSecret and XSRF-TOKEN — the Zepto BFF API
+     validates only that the request-signature is internally consistent (it does
+     NOT check XSRF against a server-side store), so random values work fine.
   2. Compute request-signature = SHA-256(sorted {body|deviceId|method|requestId|secret|url})
   3. POST /user-search-service/api/v3/search and parse organic results
 
@@ -18,13 +19,14 @@ import sys
 import json
 import hashlib
 import uuid
+import base64
+import secrets
 import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Optional
-from urllib.parse import unquote
 
 try:
     from curl_cffi import requests as cffi_requests
@@ -48,12 +50,14 @@ SEARCH_URL = "https://www.zepto.com/search?query=amazon+pay+gift+card"
 API_BASE = "https://bff-gateway.zepto.com"
 SEARCH_PATH = "/user-search-service/api/v3/search"
 
-# Store IDs for pincode 560035 (South Bengaluru) — stable physical store identifiers.
+# Store IDs for South Bengaluru 560035 area — the only zone that stocks
+# the Amazon Pay Gift Card Black Box variant at a discount for anonymous users.
+# Your home store (b4dc8d65...) has Amazon Pay cards at 0% and requires auth
+# to be visible, so it can't be monitored here.
 _STORE_ID = "6f08827d-5bea-4c32-8bea-ba8a34ae7ed9"
 _STORE_IDS = f"{_STORE_ID},774a725c-2c4b-4dc2-94d1-72b737f7e1f6"
 
-# Stable device identifier from the user's browser session — keeps requests
-# consistently attributed to the same device across runs.
+# Stable device identifier from the user's browser session.
 _DEVICE_ID = "6fea3bb4-0ac3-446e-9df3-17d690e0f647"
 
 
@@ -113,33 +117,29 @@ def _sign(method: str, url_path: str, request_id: str, device_id: str, xsrf: str
     return hashlib.sha256(joined.encode("utf-8")).hexdigest()
 
 
-def _get_session_cookies() -> Dict[str, str]:
-    """Load the Zepto homepage with the user's device_id pre-seeded to get fresh XSRF tokens."""
-    _SESSION.cookies.set("device_id", _DEVICE_ID, domain="www.zepto.com")
-    _SESSION.get(
-        "https://www.zepto.com/",
-        headers={
-            "User-Agent": (
-                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-                "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-            ),
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-            "Accept-Language": "en-IN,en;q=0.9",
-        },
-        timeout=30,
-    )
-    cookies = dict(_SESSION.cookies.items())
-    # Ensure our device_id is used even if the server overwrites it
-    cookies["device_id"] = _DEVICE_ID
-    return cookies
+def _make_session() -> Dict[str, str]:
+    """Generate a fresh anonymous session — no homepage GET needed.
+
+    The Zepto BFF validates only that the request-signature matches the values
+    in the request headers (internal consistency). XSRF-TOKEN is not checked
+    against any server-side store, so random values are accepted.
+    """
+    return {
+        "session_id": str(uuid.uuid4()),
+        "device_id": _DEVICE_ID,
+        "XSRF-TOKEN": base64.urlsafe_b64encode(secrets.token_bytes(20)).decode().rstrip("=")
+                      + ":" + base64.b64encode(secrets.token_bytes(32)).decode().rstrip("="),
+        "csrfSecret": base64.urlsafe_b64encode(secrets.token_bytes(8)).decode().rstrip("="),
+        "marketplace": "SUPER_SAVER",
+    }
 
 
-def search_products(cookies: Dict[str, str]) -> List[Dict[str, Any]]:
-    session_id = cookies.get("session_id", str(uuid.uuid4()))
-    device_id = cookies.get("device_id", str(uuid.uuid4()))
-    csrf_secret = cookies.get("csrfSecret", "")
-    xsrf = unquote(cookies.get("XSRF-TOKEN", ""))
-    marketplace = cookies.get("marketplace", "SUPER_SAVER")
+def search_products(session: Dict[str, str]) -> List[Dict[str, Any]]:
+    session_id = session["session_id"]
+    device_id = session["device_id"]
+    csrf_secret = session["csrfSecret"]
+    xsrf = session["XSRF-TOKEN"]
+    marketplace = session["marketplace"]
     request_id = str(uuid.uuid4())
 
     body_dict = {
@@ -278,18 +278,11 @@ def check_zepto_amazon():
     print(f"Min discount: {MIN_DISCOUNT_PCT}%  |  Store: 560035")
     print("=" * 60)
 
-    try:
-        print(f"[{get_ist_now()}] Initialising anonymous session...")
-        cookies = _get_session_cookies()
-        sid = cookies.get("session_id", "")
-        has_xsrf = bool(cookies.get("XSRF-TOKEN"))
-        print(f"[{get_ist_now()}] session={sid[:8] if sid else 'N/A'}...  xsrf={'yes' if has_xsrf else 'no'}")
-    except Exception as e:
-        print(f"[{get_ist_now()}] Session init failed: {e}")
-        return False
+    session = _make_session()
+    print(f"[{get_ist_now()}] Session: id={session['session_id'][:8]}...  device={session['device_id'][:8]}...")
 
     try:
-        products = search_products(cookies)
+        products = search_products(session)
     except Exception as e:
         print(f"[{get_ist_now()}] Search failed: {e}")
         return False
