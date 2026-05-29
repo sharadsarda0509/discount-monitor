@@ -86,7 +86,6 @@ jobs:
         continue-on-error: true
 
       - name: Check Apple iPhone 17 same-day pickup (Saket + Noida / 110017)
-        if: false  # disabled — iPhone 17 no longer being hunted
         env:
           SENDER_EMAIL: ${{ secrets.SENDER_EMAIL }}
           RECEIVER_EMAIL: ${{ secrets.RECEIVER_EMAIL }}
@@ -157,6 +156,7 @@ jobs:
         continue-on-error: true
 
       - name: Check JioMart iPhone discount (15/16/17 — non-EMI bank offer or base discount)
+        if: false  # temporarily disabled
         env:
           SENDER_EMAIL: ${{ secrets.SENDER_EMAIL }}
           RECEIVER_EMAIL: ${{ secrets.RECEIVER_EMAIL }}
