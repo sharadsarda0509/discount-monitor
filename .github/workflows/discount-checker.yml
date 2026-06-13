@@ -106,7 +106,7 @@ jobs:
           RECEIVER_EMAIL: ${{ secrets.RECEIVER_EMAIL }}
           EMAIL_PASSWORD: ${{ secrets.EMAIL_PASSWORD }}
           NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
-          ALERT_COOLDOWN_HOURS: "1"
+          ALERT_COOLDOWN_HOURS: "24"
         run: |
           python check_shopsy_giftcard.py
         continue-on-error: true
