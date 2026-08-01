@@ -30,7 +30,14 @@ except ImportError:
 
 IST = timezone(timedelta(hours=5, minutes=30))
 
-COOLDOWN_HOURS = float(os.environ.get("VIJAYSALES_COOLDOWN_HOURS", os.environ.get("ALERT_COOLDOWN_HOURS", 24)))
+COOLDOWN_HOURS = {
+    "vijaysales_stock": float(os.environ.get(
+        "VIJAYSALES_STOCK_COOLDOWN_HOURS",
+        os.environ.get("VIJAYSALES_COOLDOWN_HOURS", os.environ.get("ALERT_COOLDOWN_HOURS", 5 / 60)))),
+    "vijaysales_nonemi_offer": float(os.environ.get(
+        "VIJAYSALES_NONEMI_COOLDOWN_HOURS",
+        os.environ.get("VIJAYSALES_COOLDOWN_HOURS", os.environ.get("ALERT_COOLDOWN_HOURS", 24)))),
+}
 STATE_DIR = Path(".alert_state")
 STATE_FILE = STATE_DIR / "last_alert.json"
 
@@ -94,8 +101,9 @@ def should_send_alert(alert_type: str) -> bool:
         if last_time.tzinfo is None:
             last_time = last_time.replace(tzinfo=IST)
         elapsed_h = (get_ist_now() - last_time).total_seconds() / 3600
-        if elapsed_h < COOLDOWN_HOURS:
-            print(f"[{get_ist_now()}] Cooldown active for {alert_type}: {elapsed_h:.1f}h / {COOLDOWN_HOURS}h")
+        cooldown = COOLDOWN_HOURS[alert_type]
+        if elapsed_h < cooldown:
+            print(f"[{get_ist_now()}] Cooldown active for {alert_type}: {elapsed_h:.2f}h / {cooldown:.2f}h")
             return False
         return True
     except Exception as e:

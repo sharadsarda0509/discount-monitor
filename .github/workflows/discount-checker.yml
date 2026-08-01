@@ -106,7 +106,8 @@ jobs:
           RECEIVER_EMAIL: ${{ secrets.RECEIVER_EMAIL }}
           EMAIL_PASSWORD: ${{ secrets.EMAIL_PASSWORD }}
           NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
-          VIJAYSALES_COOLDOWN_HOURS: "0.5"
+          VIJAYSALES_STOCK_COOLDOWN_HOURS: "0.0833"
+          VIJAYSALES_NONEMI_COOLDOWN_HOURS: "24"
           # 3 target areas + geographic neighbours (Bangalore / Ghaziabad-Noida / Salem)
           VIJAYSALES_PINCODES: "560035,560103,560048,560087,201019,201301,201009,110096,636007,636006,636004,636009"
         run: |
