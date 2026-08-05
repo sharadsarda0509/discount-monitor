@@ -33,7 +33,7 @@ IST = timezone(timedelta(hours=5, minutes=30))
 COOLDOWN_HOURS = {
     "vijaysales_stock": float(os.environ.get(
         "VIJAYSALES_STOCK_COOLDOWN_HOURS",
-        os.environ.get("VIJAYSALES_COOLDOWN_HOURS", os.environ.get("ALERT_COOLDOWN_HOURS", 5 / 60)))),
+        os.environ.get("VIJAYSALES_COOLDOWN_HOURS", os.environ.get("ALERT_COOLDOWN_HOURS", 12)))),
     "vijaysales_nonemi_offer": float(os.environ.get(
         "VIJAYSALES_NONEMI_COOLDOWN_HOURS",
         os.environ.get("VIJAYSALES_COOLDOWN_HOURS", os.environ.get("ALERT_COOLDOWN_HOURS", 24)))),
