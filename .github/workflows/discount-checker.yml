@@ -126,6 +126,7 @@ jobs:
         continue-on-error: true
 
       - name: Check MagicPin PhonePe Rs.10000 voucher stock
+        if: false  # disabled per user request
         env:
           NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
           ALERT_COOLDOWN_HOURS: "1"
@@ -134,6 +135,7 @@ jobs:
         continue-on-error: true
 
       - name: Check OnePlay PhonePe Gift Card Rs.7500 stock
+        if: false  # disabled per user request
         env:
           SENDER_EMAIL: ${{ secrets.SENDER_EMAIL }}
           RECEIVER_EMAIL: ${{ secrets.RECEIVER_EMAIL }}
@@ -167,6 +169,47 @@ jobs:
           BLINKIT_LON: ${{ secrets.BLINKIT_LON }}
         run: |
           python check_blinkit_amazon.py
+        continue-on-error: true
+
+      - name: Check Reliance Digital iPhone 15/16/17 stock (560035)
+        env:
+          SENDER_EMAIL: ${{ secrets.SENDER_EMAIL }}
+          RECEIVER_EMAIL: ${{ secrets.RECEIVER_EMAIL }}
+          EMAIL_PASSWORD: ${{ secrets.EMAIL_PASSWORD }}
+          NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
+          RELIANCE_PINCODE: "560035"
+          RELIANCE_MODELS: "15,16,17"
+          RELIANCE_COOLDOWN_HOURS: "12"
+        run: |
+          python check_reliancedigital_iphone.py
+        continue-on-error: true
+
+      - name: Check Blinkit iPhone 15/16/17 stock (560035)
+        env:
+          SENDER_EMAIL: ${{ secrets.SENDER_EMAIL }}
+          RECEIVER_EMAIL: ${{ secrets.RECEIVER_EMAIL }}
+          EMAIL_PASSWORD: ${{ secrets.EMAIL_PASSWORD }}
+          NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
+          BLINKIT_MODELS: "15,16,17"
+          BLINKIT_IPHONE_COOLDOWN_HOURS: "12"
+          BLINKIT_LAT: ${{ secrets.BLINKIT_LAT }}
+          BLINKIT_LON: ${{ secrets.BLINKIT_LON }}
+        run: |
+          python check_blinkit_iphone.py
+        continue-on-error: true
+
+      - name: Check BigBasket iPhone 15/16/17 stock (560035)
+        env:
+          SENDER_EMAIL: ${{ secrets.SENDER_EMAIL }}
+          RECEIVER_EMAIL: ${{ secrets.RECEIVER_EMAIL }}
+          EMAIL_PASSWORD: ${{ secrets.EMAIL_PASSWORD }}
+          NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
+          BIGBASKET_MODELS: "15,16,17"
+          BIGBASKET_COOLDOWN_HOURS: "12"
+          BIGBASKET_LAT: ${{ secrets.BIGBASKET_LAT }}
+          BIGBASKET_LON: ${{ secrets.BIGBASKET_LON }}
+        run: |
+          python check_bigbasket_iphone.py
         continue-on-error: true
 
       - name: Check JioMart iPhone discount (15/16/17 — non-EMI bank offer or base discount)

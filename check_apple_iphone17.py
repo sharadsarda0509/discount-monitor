@@ -65,6 +65,12 @@ IPHONE17_COLORS = {
 }
 
 
+def _buy_link(sku: str) -> str:
+    """Deep link that lands straight on Add-to-Bag for this exact SKU, skipping the
+    model/storage/colour funnel -- the fastest legitimate path to checkout."""
+    return f"https://www.apple.com/in/shop/buy-iphone?product={sku}&step=start"
+
+
 def get_ist_now():
     return datetime.now(IST)
 
@@ -191,7 +197,10 @@ def send_ntfy_alert(pin: str, matches: List[Dict[str, Any]]):
                 f"- {r['color']}: {r['pickup_search_quote'] or 'Today'} "
                 f"@ {r['store_name']} ({r['store_id']})"
             )
-        lines.append(f"\nOrder: {PRODUCT_URL}")
+            lines.append(f"  Buy now: {_buy_link(r['sku'])}")
+        # tap the push -> straight to Add-to-Bag for the first available colour
+        click_url = _buy_link(matches[0]["sku"])
+        lines.append(f"\nQuick checkout: {click_url}")
         message = "\n".join(lines)
         requests.post(
             f"https://ntfy.sh/{NTFY_TOPIC}",
@@ -200,7 +209,7 @@ def send_ntfy_alert(pin: str, matches: List[Dict[str, Any]]):
                 "Title": f"iPhone 17 pickup today: {len(matches)} match(es) - order now",
                 "Priority": "high",
                 "Tags": "iphone,apple",
-                "Click": PRODUCT_URL,
+                "Click": click_url,
             },
             timeout=15,
         ).raise_for_status()
@@ -230,7 +239,8 @@ def send_email_alert(pin: str, matches: List[Dict[str, Any]]) -> bool:
                 f"- {r['color']}: {r['pickup_search_quote'] or 'Today'} "
                 f"@ {r['store_name']} ({r['store_id']})"
             )
-        lines.extend(["", PRODUCT_URL, "", f"Time: {ist_time}"])
+            lines.append(f"    Buy now (Add to Bag): {_buy_link(r['sku'])}")
+        lines.extend(["", f"Quick checkout: {_buy_link(matches[0]['sku'])}", "", f"Time: {ist_time}"])
         text_body = "\n".join(lines)
         msg = MIMEMultipart("alternative")
         msg["Subject"] = f"iPhone 17: same-day pickup available -- {len(matches)} match(es)"
