@@ -47,6 +47,8 @@ try:
 except ImportError:
     BeautifulSoup = None
 
+import brightdata_browser
+
 IST = timezone(timedelta(hours=5, minutes=30))
 COOLDOWN_HOURS = int(os.environ.get('ALERT_COOLDOWN_HOURS', 12))
 STATE_DIR = Path('.alert_state')
@@ -189,18 +191,8 @@ def _num(text: Optional[str]) -> Optional[float]:
         return None
 
 
-def fetch_gift_card(asin: str) -> Optional[Dict[str, Any]]:
-    """Read buybox price + struck MRP for a fixed-denomination gift-card ASIN."""
-    try:
-        r = _get(f"https://www.amazon.in/dp/{asin}", headers=HEADERS, timeout=30)
-        if r.status_code != 200:
-            print(f"[{get_ist_now()}] {asin}: HTTP {r.status_code}")
-            return None
-        html = r.text
-    except Exception as e:
-        print(f"[{get_ist_now()}] {asin}: fetch failed: {e}")
-        return None
-
+def _parse_gift_card(asin: str, html: str) -> Optional[Dict[str, Any]]:
+    """Parse buybox price + struck MRP from a fixed-denomination gift-card product page."""
     if "validateCaptcha" in html or "Enter the characters you see" in html:
         print(f"[{get_ist_now()}] {asin}: CAPTCHA -- request was bot-flagged")
         return None
@@ -229,6 +221,36 @@ def fetch_gift_card(asin: str) -> Optional[Dict[str, Any]]:
         "discount_pct": discount_pct,
         "url": f"https://www.amazon.in/dp/{asin}",
     }
+
+
+def fetch_gift_card(asin: str) -> Optional[Dict[str, Any]]:
+    """Direct (curl_cffi) product-page fetch -- works from a residential IP; the GitHub
+    Actions datacenter IP is CAPTCHA'd by Amazon (use the Scraping Browser path there)."""
+    try:
+        r = _get(f"https://www.amazon.in/dp/{asin}", headers=HEADERS, timeout=30)
+        if r.status_code != 200:
+            print(f"[{get_ist_now()}] {asin}: HTTP {r.status_code}")
+            return None
+    except Exception as e:
+        print(f"[{get_ist_now()}] {asin}: fetch failed: {e}")
+        return None
+    return _parse_gift_card(asin, r.text)
+
+
+def fetch_gift_cards_via_browser(asins: List[str]) -> List[Dict[str, Any]]:
+    """Fetch all ASINs' product pages in ONE Scraping Browser session (residential IP,
+    real browser -> no CAPTCHA). Minimal credits: one session, same-origin GETs."""
+    calls = [{"url": f"https://www.amazon.in/dp/{a}", "method": "GET"} for a in asins]
+    resp = brightdata_browser.browser_fetch("https://www.amazon.in/", calls) or []
+    out = []
+    for asin, r in zip(asins, resp):
+        if not r or r.get("status") != 200:
+            print(f"[{get_ist_now()}] {asin}: browser HTTP {r.get('status') if r else 'n/a'}")
+            continue
+        info = _parse_gift_card(asin, r.get("text") or "")
+        if info:
+            out.append(info)
+    return out
 
 
 def _lines(matches: List[Dict[str, Any]]) -> List[str]:
@@ -298,17 +320,25 @@ def check_amazon():
     if _recently_ran():
         return False
 
-    # Dynamic discovery (search) merged with the seed list, de-duplicated (seed first).
-    discovered = discover_asins(AMAZON_GC_MAX)
-    asins = list(dict.fromkeys(ASINS + discovered))
-    print(f"[{get_ist_now()}] discovered {len(discovered)} via search; checking {len(asins)} ASIN(s)")
-    _mark_ran()
+    use_browser = brightdata_browser.is_configured()
+    if use_browser:
+        # Scraping Browser (residential) -- Amazon CAPTCHAs the datacenter IP. To keep
+        # credits minimal, check only the seed ASINs (they carry the blanket promo) in
+        # one browser session; skip search discovery (would add ~25 heavy fetches).
+        asins = ASINS
+        print(f"[{get_ist_now()}] Source: Bright Data Scraping Browser; checking {len(asins)} seed ASIN(s)")
+        _mark_ran()
+        infos = fetch_gift_cards_via_browser(asins)
+    else:
+        # Direct (residential/local): full dynamic discovery.
+        discovered = discover_asins(AMAZON_GC_MAX)
+        asins = list(dict.fromkeys(ASINS + discovered))
+        print(f"[{get_ist_now()}] Source: direct; discovered {len(discovered)} via search; checking {len(asins)} ASIN(s)")
+        _mark_ran()
+        infos = [i for i in (fetch_gift_card(a) for a in asins) if i]
 
     matches = []
-    for asin in asins:
-        info = fetch_gift_card(asin)
-        if not info:
-            continue  # free-amount card (no static price) or parse/bot failure -> skip
+    for info in infos:
         disc = f"{info['discount_pct']:.1f}% off" if info["discount_pct"] > 0 else "no discount"
         print(f"[{get_ist_now()}] {info['asin']}  Rs.{int(info['price']):6d}  {disc:12s}  {info['title'][:50]}")
         if info["discount_pct"] >= MIN_DISCOUNT_PCT:

@@ -38,8 +38,12 @@ except ImportError:
     print("Error: pip install -r requirements.txt")
     sys.exit(1)
 
+import brightdata_browser
+
 IST = timezone(timedelta(hours=5, minutes=30))
 COOLDOWN_HOURS = float(os.environ.get("BLINKIT_COOLDOWN_HOURS", os.environ.get("ALERT_COOLDOWN_HOURS", 1)))
+# Only hit the Scraping Browser at most once per this many minutes (credit conservation).
+RUN_INTERVAL_MIN = float(os.environ.get("BLINKIT_AMAZON_RUN_INTERVAL_MIN", 0))
 STATE_DIR = Path(".alert_state")
 STATE_FILE = STATE_DIR / "last_alert.json"
 
@@ -113,29 +117,70 @@ def record_alert(alert_type: str):
     STATE_FILE.write_text(json.dumps(state, indent=2))
 
 
+def _recently_scraped() -> bool:
+    """True if a browser scrape ran within RUN_INTERVAL_MIN -- skip to conserve credits."""
+    if RUN_INTERVAL_MIN <= 0:
+        return False
+    try:
+        state = json.loads(STATE_FILE.read_text()) if STATE_FILE.exists() else {}
+        last = state.get("blinkit_amazon_lastrun")
+        if not last:
+            return False
+        last_time = datetime.fromisoformat(last)
+        if last_time.tzinfo is None:
+            last_time = last_time.replace(tzinfo=IST)
+        elapsed_min = (get_ist_now() - last_time).total_seconds() / 60
+        if elapsed_min < RUN_INTERVAL_MIN:
+            print(f"[{get_ist_now()}] Throttled: last scrape {elapsed_min:.0f}m ago "
+                  f"(< {RUN_INTERVAL_MIN:.0f}m) -- skipping to save Scraping Browser credits")
+            return True
+        return False
+    except Exception:
+        return False
+
+
+def _mark_scraped():
+    STATE_DIR.mkdir(exist_ok=True)
+    state = {}
+    if STATE_FILE.exists():
+        try:
+            state = json.loads(STATE_FILE.read_text())
+        except Exception:
+            pass
+    state["blinkit_amazon_lastrun"] = get_ist_now().isoformat()
+    STATE_FILE.write_text(json.dumps(state, indent=2))
+
+
+_SEARCH_URL = (f"https://blinkit.com/v1/layout/search?q={SEARCH_QUERY.replace(' ', '+')}"
+               f"&search_type=type_to_search")
+_SEARCH_BODY = {
+    "applied_filters": None,
+    "monet_assets": [],
+    "postback_meta": {},
+    "previous_search_query": "",
+    "processed_rails": {},
+    "similar_entities": None,
+    "sort": "",
+    "vertical_cards_processed": 0,
+}
+
+
 def search_products(auth_key: str) -> List[Dict[str, Any]]:
-    headers = {
-        **BASE_HEADERS,
-        "auth_key": auth_key,
-        "lat": str(LAT),
-        "lon": str(LON),
-    }
-    body = {
-        "applied_filters": None,
-        "monet_assets": [],
-        "postback_meta": {},
-        "previous_search_query": "",
-        "processed_rails": {},
-        "similar_entities": None,
-        "sort": "",
-        "vertical_cards_processed": 0,
-    }
-    r = _post(
-        f"https://blinkit.com/v1/layout/search?q={SEARCH_QUERY.replace(' ', '+')}&search_type=type_to_search",
-        headers=headers,
-        json=body,
-        timeout=30,
-    )
+    headers = {**BASE_HEADERS, "auth_key": auth_key, "lat": str(LAT), "lon": str(LON)}
+    # Blinkit 403s datacenter IPs; route through the Scraping Browser (residential) when
+    # configured, in one session. Falls back to a direct request otherwise.
+    if brightdata_browser.is_configured():
+        call = {"url": _SEARCH_URL, "method": "POST", "headers": headers,
+                "body": json.dumps(_SEARCH_BODY)}
+        resp = brightdata_browser.browser_fetch("https://blinkit.com/", [call]) or []
+        if not resp or resp[0].get("status") != 200:
+            print(f"[{get_ist_now()}] browser search: HTTP {resp[0].get('status') if resp else 'n/a'}")
+            return []
+        try:
+            return (json.loads(resp[0].get("text") or "{}").get("response", {}) or {}).get("snippets", [])
+        except ValueError:
+            return []
+    r = _post(_SEARCH_URL, headers=headers, json=_SEARCH_BODY, timeout=30)
     r.raise_for_status()
     return r.json().get("response", {}).get("snippets", [])
 
@@ -225,10 +270,15 @@ def send_email_alert(products: List[Dict[str, Any]]) -> bool:
 
 
 def check_blinkit_amazon():
+    use_browser = brightdata_browser.is_configured()
     print("=" * 60)
     print(f"Blinkit Amazon Pay Gift Card monitor -- {get_ist_now()}")
-    print(f"Location: lat={LAT}, lon={LON}")
+    print(f"Location: lat={LAT}, lon={LON}   "
+          f"Source: {'Bright Data Scraping Browser' if use_browser else 'direct'}")
     print("=" * 60)
+
+    if use_browser and _recently_scraped():
+        return False
 
     auth_key = _AUTH_KEY
     print(f"[{get_ist_now()}] Using auth_key: {auth_key[:16]}...")
@@ -237,7 +287,9 @@ def check_blinkit_amazon():
         snippets = search_products(auth_key)
     except requests.RequestException as e:
         print(f"[{get_ist_now()}] Search request failed: {e}")
-        sys.exit(1)
+        return False
+    if use_browser:
+        _mark_scraped()
 
     products = parse_products(snippets)
 
