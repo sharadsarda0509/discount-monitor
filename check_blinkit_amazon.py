@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 """
-Blinkit -- Amazon Pay Physical Gift Card stock monitor.
+Blinkit -- Amazon Pay Physical Gift Card DISCOUNT monitor.
 
-Checks if the Amazon Pay Physical Gift Card (product_id 756254) is in stock
-at the Blinkit store serving the given lat/lon (default: pincode 560035,
-South Bengaluru).
+Alerts only when the Amazon Pay Physical Gift Card is in stock AND actually
+discounted (selling price < MRP by >= BLINKIT_AMAZON_MIN_DISCOUNT %) at the Blinkit
+store serving the given lat/lon (default: pincode 560035, South Bengaluru).
+In-stock-at-face-value is ignored -- only a real discount is worth an alert.
 
 API flow:
   1. GET /v2/accounts/auth_key/      -> auth_key
@@ -13,6 +14,7 @@ API flow:
 
 import os
 import sys
+import re
 import json
 import smtplib
 from email.mime.text import MIMEText
@@ -44,6 +46,9 @@ IST = timezone(timedelta(hours=5, minutes=30))
 COOLDOWN_HOURS = float(os.environ.get("BLINKIT_COOLDOWN_HOURS", os.environ.get("ALERT_COOLDOWN_HOURS", 1)))
 # Only hit the Scraping Browser at most once per this many minutes (credit conservation).
 RUN_INTERVAL_MIN = float(os.environ.get("BLINKIT_AMAZON_RUN_INTERVAL_MIN", 0))
+# Only alert when the card is actually DISCOUNTED (selling price < MRP) by at least this %.
+# In-stock-at-face-value is not interesting. 0.5 = any real discount.
+MIN_DISCOUNT_PCT = float(os.environ.get("BLINKIT_AMAZON_MIN_DISCOUNT", 0.5))
 STATE_DIR = Path(".alert_state")
 STATE_FILE = STATE_DIR / "last_alert.json"
 
@@ -185,6 +190,16 @@ def search_products(auth_key: str) -> List[Dict[str, Any]]:
     return r.json().get("response", {}).get("snippets", [])
 
 
+def _price_num(text: str) -> Optional[float]:
+    if not text:
+        return None
+    cleaned = re.sub(r"[^0-9.]", "", text)
+    try:
+        return float(cleaned)
+    except ValueError:
+        return None
+
+
 def parse_products(snippets: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     results = []
     for snippet in snippets:
@@ -201,6 +216,11 @@ def parse_products(snippets: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         mrp_text = (data.get("mrp") or {}).get("text", "")
         price_text = (data.get("normal_price") or {}).get("text", "")
 
+        mrp = _price_num(mrp_text)
+        price = _price_num(price_text)
+        discount_pct = (round((mrp - price) / mrp * 100, 1)
+                        if (mrp and price and mrp > price) else 0.0)
+
         results.append({
             "name": name,
             "inventory": inventory,
@@ -208,6 +228,7 @@ def parse_products(snippets: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
             "product_state": product_state,
             "mrp_text": mrp_text,
             "price_text": price_text,
+            "discount_pct": discount_pct,
             "in_stock": not is_sold_out and inventory > 0,
         })
     return results
@@ -218,16 +239,17 @@ def send_ntfy_alert(products: List[Dict[str, Any]]) -> bool:
         print(f"[{get_ist_now()}] ntfy not configured")
         return False
     try:
-        lines = ["Amazon Pay Physical Gift Card in stock on Blinkit!\n"]
+        lines = ["Amazon Pay Gift Card DISCOUNTED on Blinkit!\n"]
         for p in products:
-            lines.append(f"- {p['name']}: {p['price_text']} (MRP {p['mrp_text']}) | inventory={p['inventory']}")
+            lines.append(f"- {p['name']}: {p['price_text']} (MRP {p['mrp_text']}) "
+                         f"-- {p['discount_pct']:.1f}% off | inventory={p['inventory']}")
         lines.append(f"\nOrder now: {PRODUCT_URL}")
         message = "\n".join(lines)
         _post(
             f"https://ntfy.sh/{NTFY_TOPIC}",
             data=message.encode("utf-8"),
             headers={
-                "Title": f"Blinkit: Amazon Pay GC in stock ({len(products)} item(s))",
+                "Title": f"Blinkit: Amazon Pay GC {products[0]['discount_pct']:.0f}% off ({len(products)} item(s))",
                 "Priority": "high",
                 "Tags": "amazon,blinkit,gift",
                 "Click": PRODUCT_URL,
@@ -249,13 +271,14 @@ def send_email_alert(products: List[Dict[str, Any]]) -> bool:
         return False
     try:
         ist_time = get_ist_now().strftime("%Y-%m-%d %H:%M:%S IST")
-        lines = ["Amazon Pay Physical Gift Card is back in stock on Blinkit!\n"]
+        lines = ["Amazon Pay Gift Card DISCOUNTED on Blinkit!\n"]
         for p in products:
-            lines.append(f"- {p['name']}: {p['price_text']} (MRP {p['mrp_text']}), inventory={p['inventory']}")
+            lines.append(f"- {p['name']}: {p['price_text']} (MRP {p['mrp_text']}) "
+                         f"-- {p['discount_pct']:.1f}% off, inventory={p['inventory']}")
         lines.extend(["", f"Order now: {PRODUCT_URL}", "", f"Time: {ist_time}"])
         text_body = "\n".join(lines)
         msg = MIMEMultipart("alternative")
-        msg["Subject"] = f"Blinkit: Amazon Pay GC in stock!"
+        msg["Subject"] = f"Blinkit: Amazon Pay GC {products[0]['discount_pct']:.0f}% off!"
         msg["From"] = sender
         msg["To"] = receiver
         msg.attach(MIMEText(text_body, "plain"))
@@ -297,27 +320,28 @@ def check_blinkit_amazon():
         print(f"[{get_ist_now()}] No Amazon Pay gift card products found in results")
         return False
 
-    in_stock = []
+    discounted = []
     for p in products:
         status = "IN STOCK" if p["in_stock"] else "out of stock"
+        disc = f"{p['discount_pct']:.1f}% off" if p["discount_pct"] > 0 else "no discount"
         print(
             f"[{get_ist_now()}] {p['name']:40s}  {status:12s}  "
-            f"{p['price_text']} (MRP {p['mrp_text']})  inv={p['inventory']}"
+            f"{p['price_text']} (MRP {p['mrp_text']})  {disc}  inv={p['inventory']}"
         )
-        if p["in_stock"]:
-            in_stock.append(p)
+        if p["in_stock"] and p["discount_pct"] >= MIN_DISCOUNT_PCT:
+            discounted.append(p)
 
-    if not in_stock:
-        print(f"[{get_ist_now()}] No Amazon Pay gift cards in stock.")
+    if not discounted:
+        print(f"[{get_ist_now()}] No in-stock Amazon Pay gift card with >={MIN_DISCOUNT_PCT}% discount.")
         return False
 
-    print(f"[{get_ist_now()}] IN STOCK: {[p['name'] for p in in_stock]}")
+    print(f"[{get_ist_now()}] DISCOUNTED: {[(p['name'], p['discount_pct']) for p in discounted]}")
 
     if not should_send_alert("blinkit_amazon"):
         return False
 
-    ntfy_ok = send_ntfy_alert(in_stock)
-    email_ok = send_email_alert(in_stock)
+    ntfy_ok = send_ntfy_alert(discounted)
+    email_ok = send_email_alert(discounted)
     if ntfy_ok or email_ok:
         record_alert("blinkit_amazon")
     return ntfy_ok or email_ok
