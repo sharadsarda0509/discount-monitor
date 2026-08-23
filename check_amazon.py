@@ -42,6 +42,11 @@ except ImportError:
         print("Error: pip install -r requirements.txt")
         sys.exit(1)
 
+try:
+    from bs4 import BeautifulSoup
+except ImportError:
+    BeautifulSoup = None
+
 IST = timezone(timedelta(hours=5, minutes=30))
 COOLDOWN_HOURS = int(os.environ.get('ALERT_COOLDOWN_HOURS', 12))
 STATE_DIR = Path('.alert_state')
@@ -50,11 +55,21 @@ NTFY_TOPIC = os.environ.get('NTFY_TOPIC', '')
 
 MIN_DISCOUNT_PCT = float(os.environ.get("AMAZON_MIN_DISCOUNT", 2.0))
 
-# Fixed-denomination Amazon Pay Physical Gift Card ASINs (one per denomination). These
-# carry the recurring upfront discount and render price server-side. Override/extend via
-# AMAZON_GC_ASINS="asin,asin,...". Default: the "Black Box" family (Rs.1000/2000/3000/10000).
+# Seed / fallback fixed-denomination Amazon Pay Physical Gift Card ASINs (one per
+# denomination) -- always checked, and used if dynamic discovery returns nothing.
+# The "Black Box" family (Rs.1000/2000/3000/10000). Override via AMAZON_GC_ASINS.
 _DEFAULT_ASINS = "B00PQ6Z02G,B00PQ6ZEC2,B00PQ6ZMGK,B00PQ70336"
 ASINS = [a.strip() for a in os.environ.get("AMAZON_GC_ASINS", _DEFAULT_ASINS).split(",") if a.strip()]
+
+# Dynamic discovery: pull gift-card ASINs from search each run, then verify each via its
+# product page (free-amount cards render no static price and are skipped automatically).
+SEARCH_URL = "https://www.amazon.in/s?k=amazon+pay+physical+gift+card"
+# Cap discovered ASINs to keep Amazon request volume (and bot-block risk) sane.
+AMAZON_GC_MAX = int(os.environ.get("AMAZON_GC_MAX", 25))
+# Only run the (multi-fetch) scan at most once per this many minutes. The workflow fires
+# every 5 min; scanning ~25 product pages that often would get the IP bot-flagged.
+# 0 = every trigger. Set e.g. 20 in the workflow.
+RUN_INTERVAL_MIN = float(os.environ.get("AMAZON_RUN_INTERVAL_MIN", 0))
 
 # No cookies on purpose (see module docstring). Plain desktop Chrome UA + language.
 HEADERS = {
@@ -101,6 +116,67 @@ def record_alert(alert_type: str):
             pass
     state[alert_type] = get_ist_now().isoformat()
     STATE_FILE.write_text(json.dumps(state, indent=2))
+
+
+def _recently_ran() -> bool:
+    """True if a scan ran within RUN_INTERVAL_MIN -- skip to avoid hammering Amazon."""
+    if RUN_INTERVAL_MIN <= 0:
+        return False
+    try:
+        state = json.loads(STATE_FILE.read_text()) if STATE_FILE.exists() else {}
+        last = state.get("amazon_lastrun")
+        if not last:
+            return False
+        last_time = datetime.fromisoformat(last)
+        if last_time.tzinfo is None:
+            last_time = last_time.replace(tzinfo=IST)
+        elapsed_min = (get_ist_now() - last_time).total_seconds() / 60
+        if elapsed_min < RUN_INTERVAL_MIN:
+            print(f"[{get_ist_now()}] Throttled: last scan {elapsed_min:.0f}m ago "
+                  f"(< {RUN_INTERVAL_MIN:.0f}m) -- skipping")
+            return True
+        return False
+    except Exception:
+        return False
+
+
+def _mark_ran():
+    STATE_DIR.mkdir(exist_ok=True)
+    state = {}
+    if STATE_FILE.exists():
+        try:
+            state = json.loads(STATE_FILE.read_text())
+        except Exception:
+            pass
+    state["amazon_lastrun"] = get_ist_now().isoformat()
+    STATE_FILE.write_text(json.dumps(state, indent=2))
+
+
+def discover_asins(max_n: int) -> List[str]:
+    """Discover Amazon Pay physical gift-card ASINs from the search page (cookieless)."""
+    if BeautifulSoup is None:
+        return []
+    try:
+        r = _get(SEARCH_URL, headers=HEADERS, timeout=30)
+        if r.status_code != 200 or "validateCaptcha" in r.text:
+            print(f"[{get_ist_now()}] discovery: HTTP {r.status_code} (or captcha)")
+            return []
+        soup = BeautifulSoup(r.text, "html.parser")
+    except Exception as e:
+        print(f"[{get_ist_now()}] discovery failed: {e}")
+        return []
+    found: List[str] = []
+    for div in soup.find_all("div", {"data-component-type": "s-search-result"}):
+        asin = div.get("data-asin", "")
+        t = div.find("h2")
+        if not asin or not t:
+            continue
+        title = t.get_text(strip=True).lower()
+        if "amazon pay" in title and "gift card" in title and asin not in found:
+            found.append(asin)
+        if len(found) >= max_n:
+            break
+    return found
 
 
 def _num(text: Optional[str]) -> Optional[float]:
@@ -216,14 +292,23 @@ def send_email_alert(matches: List[Dict[str, Any]]) -> bool:
 def check_amazon():
     print("=" * 60)
     print(f"Amazon Pay Gift Card Monitor -- {get_ist_now()}")
-    print(f"Min discount: {MIN_DISCOUNT_PCT}%  |  ASINs: {', '.join(ASINS)}")
+    print(f"Min discount: {MIN_DISCOUNT_PCT}%")
     print("=" * 60)
 
+    if _recently_ran():
+        return False
+
+    # Dynamic discovery (search) merged with the seed list, de-duplicated (seed first).
+    discovered = discover_asins(AMAZON_GC_MAX)
+    asins = list(dict.fromkeys(ASINS + discovered))
+    print(f"[{get_ist_now()}] discovered {len(discovered)} via search; checking {len(asins)} ASIN(s)")
+    _mark_ran()
+
     matches = []
-    for asin in ASINS:
+    for asin in asins:
         info = fetch_gift_card(asin)
         if not info:
-            continue
+            continue  # free-amount card (no static price) or parse/bot failure -> skip
         disc = f"{info['discount_pct']:.1f}% off" if info["discount_pct"] > 0 else "no discount"
         print(f"[{get_ist_now()}] {info['asin']}  Rs.{int(info['price']):6d}  {disc:12s}  {info['title'][:50]}")
         if info["discount_pct"] >= MIN_DISCOUNT_PCT:
