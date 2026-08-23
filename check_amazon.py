@@ -1,23 +1,46 @@
 #!/usr/bin/env python3
 """
-Amazon Pay Physical Gift Card discount monitor.
+Amazon Pay Physical Gift Card upfront-discount monitor.
 
-Uses Amazon search page (less bot-protected than product pages) to check
-if any Amazon Pay physical gift card has an upfront discount ≥ MIN_DISCOUNT_PCT.
+Amazon Pay physical gift cards come in two forms:
+  * fixed-denomination "twister" cards (a child ASIN per denomination, e.g. the
+    "Black Box" family: 1000/2000/3000/10000) -- their selling price AND any upfront
+    discount are SERVER-rendered in the product-page HTML, so a plain request sees them.
+  * free-amount cards (a "Gift Amount" box/slider) -- price is computed client-side by
+    JavaScript and is NOT in any static HTML, so they can't be monitored without a browser.
 
-Session cookies are long-lived anonymous guest cookies (session-id-time ~2036).
+This monitor watches the fixed-denomination ASINs (the ones that carry the recurring
+"flat X% off Amazon Pay Gift Card" promo, e.g. a Rs.10,000 card selling for Rs.9,800).
+For each ASIN it reads the buybox price (`apex-pricetopay-value`) and the struck MRP
+(`apex-basisprice-feature`) straight from the product page and alerts when price < MRP.
+
+IMPORTANT: send NO cookies. A guest `session-id`/`ubid` cookie makes Amazon render a
+variant that strips the price feature-div; a cookieless request returns the full price.
 """
 
 import os
 import sys
 import json
-import smtplib
 import re
+import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+
+try:
+    from curl_cffi import requests as cffi_requests
+    def _get(url, **kw):
+        return cffi_requests.Session(impersonate="chrome120").get(url, **kw)
+except ImportError:
+    try:
+        import requests as _requests
+        def _get(url, **kw):
+            return _requests.get(url, **kw)
+    except ImportError:
+        print("Error: pip install -r requirements.txt")
+        sys.exit(1)
 
 IST = timezone(timedelta(hours=5, minutes=30))
 COOLDOWN_HOURS = int(os.environ.get('ALERT_COOLDOWN_HOURS', 12))
@@ -25,33 +48,21 @@ STATE_DIR = Path('.alert_state')
 STATE_FILE = STATE_DIR / 'last_alert.json'
 NTFY_TOPIC = os.environ.get('NTFY_TOPIC', '')
 
-SEARCH_URL = "https://www.amazon.in/s?k=amazon+pay+physical+gift+card"
 MIN_DISCOUNT_PCT = float(os.environ.get("AMAZON_MIN_DISCOUNT", 2.0))
 
-# Long-lived anonymous guest session cookies (session-id-time expires ~2036).
-_SESSION_COOKIES = {
-    "session-id": "524-8245774-6919306",
-    "session-id-time": "2082787201l",
-    "i18n-prefs": "INR",
-    "lc-acbin": "en_IN",
-    "ubid-acbin": "259-8092123-3440844",
-}
+# Fixed-denomination Amazon Pay Physical Gift Card ASINs (one per denomination). These
+# carry the recurring upfront discount and render price server-side. Override/extend via
+# AMAZON_GC_ASINS="asin,asin,...". Default: the "Black Box" family (Rs.1000/2000/3000/10000).
+_DEFAULT_ASINS = "B00PQ6Z02G,B00PQ6ZEC2,B00PQ6ZMGK,B00PQ70336"
+ASINS = [a.strip() for a in os.environ.get("AMAZON_GC_ASINS", _DEFAULT_ASINS).split(",") if a.strip()]
 
-try:
-    from curl_cffi import requests as cffi_requests
-    from bs4 import BeautifulSoup
-    _SESSION = cffi_requests.Session(impersonate="chrome120")
-    for k, v in _SESSION_COOKIES.items():
-        _SESSION.cookies.set(k, v, domain=".amazon.in")
-except ImportError:
-    try:
-        import requests as _fallback
-        from bs4 import BeautifulSoup
-        _SESSION = _fallback.Session()
-        _SESSION.cookies.update(_SESSION_COOKIES)
-    except ImportError:
-        print("Error: pip install -r requirements.txt")
-        sys.exit(1)
+# No cookies on purpose (see module docstring). Plain desktop Chrome UA + language.
+HEADERS = {
+    "User-Agent": ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
+                   "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"),
+    "Accept-Language": "en-IN,en;q=0.9",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+}
 
 
 def get_ist_now():
@@ -92,82 +103,64 @@ def record_alert(alert_type: str):
     STATE_FILE.write_text(json.dumps(state, indent=2))
 
 
-def _parse_price(text: str) -> Optional[float]:
-    cleaned = re.sub(r"[₹,\s]", "", text.strip())
+def _num(text: Optional[str]) -> Optional[float]:
+    if not text:
+        return None
+    cleaned = re.sub(r"[^0-9.]", "", text)
     try:
         return float(cleaned)
     except ValueError:
         return None
 
 
-def fetch_search_results() -> List[Dict[str, Any]]:
-    r = _SESSION.get(SEARCH_URL, timeout=30)
-    r.raise_for_status()
+def fetch_gift_card(asin: str) -> Optional[Dict[str, Any]]:
+    """Read buybox price + struck MRP for a fixed-denomination gift-card ASIN."""
+    try:
+        r = _get(f"https://www.amazon.in/dp/{asin}", headers=HEADERS, timeout=30)
+        if r.status_code != 200:
+            print(f"[{get_ist_now()}] {asin}: HTTP {r.status_code}")
+            return None
+        html = r.text
+    except Exception as e:
+        print(f"[{get_ist_now()}] {asin}: fetch failed: {e}")
+        return None
 
-    if "validateCaptcha" in r.text or "Enter the characters" in r.text:
-        print(f"[{get_ist_now()}] Amazon CAPTCHA detected -- session cookies may have expired")
-        return []
+    if "validateCaptcha" in html or "Enter the characters you see" in html:
+        print(f"[{get_ist_now()}] {asin}: CAPTCHA -- request was bot-flagged")
+        return None
 
-    soup = BeautifulSoup(r.text, "html.parser")
-    items = []
-    for div in soup.find_all("div", {"data-component-type": "s-search-result"}):
-        asin = div.get("data-asin", "")
-        title_el = div.find("h2")
-        price_el = div.find("span", class_="a-price-whole")
-        strike_el = div.find("span", class_="a-text-price")
+    # Buybox price (the amount you actually pay).
+    pay_m = (re.search(r'apex-pricetopay-value.*?a-price-whole"[^>]*>([0-9,]+)', html, re.S)
+             or re.search(r'apex-pricetopay-accessibility-label[^>]*>\s*₹?([0-9,.]+)', html))
+    # Struck MRP / basis price -- present (equal to price) even without a discount.
+    mrp_m = re.search(r'apex-basisprice-feature.*?a-offscreen"[^>]*>₹?([0-9,.]+)', html, re.S)
+    title_m = re.search(r'id="productTitle"[^>]*>([^<]+)', html)
 
-        if not title_el or not price_el:
-            continue
+    price = _num(pay_m.group(1)) if pay_m else None
+    mrp = _num(mrp_m.group(1)) if mrp_m else None
+    if price is None:
+        print(f"[{get_ist_now()}] {asin}: could not parse price (page layout changed / bot-stripped)")
+        return None
+    if not mrp or mrp < price:
+        mrp = price  # no basis price -> treat as no discount
 
-        title = title_el.get_text(strip=True)
-        if "amazon pay" not in title.lower():
-            continue
+    discount_pct = round((mrp - price) / mrp * 100, 1) if mrp > price else 0.0
+    return {
+        "asin": asin,
+        "title": (title_m.group(1).strip()[:80] if title_m else asin),
+        "price": price,
+        "mrp": mrp,
+        "discount_pct": discount_pct,
+        "url": f"https://www.amazon.in/dp/{asin}",
+    }
 
-        current_price = _parse_price(price_el.get_text())
-        if current_price is None:
-            continue
 
-        original_price = None
-        if strike_el:
-            strike_price_el = strike_el.find("span")
-            if strike_price_el:
-                original_price = _parse_price(strike_price_el.get_text())
-
-        discount_pct = 0.0
-        discount_label = ""
-        if original_price and original_price > current_price:
-            discount_pct = (original_price - current_price) / original_price * 100
-
-        # Also check badge text: "5% off", "Save ₹200", coupon clips etc.
-        badge_el = div.find("span", class_=re.compile(r"savingsPercentage|a-badge-text|s-coupon"))
-        if badge_el:
-            badge_text = badge_el.get_text(strip=True)
-            discount_label = badge_text
-            if discount_pct == 0:
-                m = re.search(r"(\d+)%", badge_text)
-                if m:
-                    discount_pct = float(m.group(1))
-
-        # Check any element with "% off" text inside the item
-        if discount_pct == 0:
-            pct_el = div.find(string=re.compile(r"\d+%\s*off", re.I))
-            if pct_el:
-                m = re.search(r"(\d+)%", pct_el)
-                if m:
-                    discount_pct = float(m.group(1))
-                    discount_label = pct_el.strip()
-
-        items.append({
-            "asin": asin,
-            "title": title[:80],
-            "current_price": current_price,
-            "original_price": original_price,
-            "discount_pct": discount_pct,
-            "discount_label": discount_label,
-            "url": f"https://www.amazon.in/dp/{asin}",
-        })
-
-    return items
+def _lines(matches: List[Dict[str, Any]]) -> List[str]:
+    out = []
+    for m in matches:
+        out.append(f"- {m['title']}: Rs.{int(m['price'])} (was Rs.{int(m['mrp'])}) "
+                   f"-- {m['discount_pct']:.1f}% off\n  {m['url']}")
+    return out
 
 
 def send_ntfy_alert(matches: List[Dict[str, Any]]) -> bool:
@@ -175,22 +168,16 @@ def send_ntfy_alert(matches: List[Dict[str, Any]]) -> bool:
         print(f"[{get_ist_now()}] ntfy not configured")
         return False
     try:
-        lines = ["Amazon Pay Gift Card discount found!\n"]
-        for m in matches:
-            orig = f", was Rs.{int(m['original_price'])}" if m.get('original_price') else ""
-            lines.append(
-                f"- {m['title']}: Rs.{int(m['current_price'])}{orig} — {m['discount_pct']:.1f}% off"
-            )
-            lines.append(f"  Buy: {m['url']}")
-        message = "\n".join(lines)
-        _SESSION.post(
+        message = "\n".join(["Amazon Pay Gift Card upfront discount found!\n"] + _lines(matches))
+        import requests as _rq
+        _rq.post(
             f"https://ntfy.sh/{NTFY_TOPIC}",
             data=message.encode("utf-8"),
             headers={
-                "Title": f"Amazon GC discount: {len(matches)} item(s)",
+                "Title": f"Amazon Pay GC: {matches[0]['discount_pct']:.0f}% off ({len(matches)} item(s))",
                 "Priority": "high",
                 "Tags": "amazon,gift,discount",
-                "Click": SEARCH_URL,
+                "Click": matches[0]["url"],
             },
             timeout=15,
         ).raise_for_status()
@@ -209,16 +196,10 @@ def send_email_alert(matches: List[Dict[str, Any]]) -> bool:
         return False
     try:
         ist_time = get_ist_now().strftime("%Y-%m-%d %H:%M:%S IST")
-        lines = ["Amazon Pay Gift Card discount!\n"]
-        for m in matches:
-            orig = f", was Rs.{int(m['original_price'])}" if m.get('original_price') else ""
-            lines.append(
-                f"- {m['title']}: Rs.{int(m['current_price'])}{orig} — {m['discount_pct']:.1f}% off\n  {m['url']}"
-            )
-        lines.extend(["", f"Search: {SEARCH_URL}", "", f"Time: {ist_time}"])
-        text_body = "\n".join(lines)
+        text_body = "\n".join(["Amazon Pay Gift Card upfront discount!\n"] + _lines(matches)
+                              + ["", f"Time: {ist_time}"])
         msg = MIMEMultipart("alternative")
-        msg["Subject"] = f"Amazon Pay GC discount: {len(matches)} item(s)"
+        msg["Subject"] = f"Amazon Pay GC: {matches[0]['discount_pct']:.0f}% off ({len(matches)} item(s))"
         msg["From"] = sender
         msg["To"] = receiver
         msg.attach(MIMEText(text_body, "plain"))
@@ -234,36 +215,25 @@ def send_email_alert(matches: List[Dict[str, Any]]) -> bool:
 
 def check_amazon():
     print("=" * 60)
-    print(f"Amazon Gift Card Monitor -- {get_ist_now()}")
-    print(f"Min discount: {MIN_DISCOUNT_PCT}%")
+    print(f"Amazon Pay Gift Card Monitor -- {get_ist_now()}")
+    print(f"Min discount: {MIN_DISCOUNT_PCT}%  |  ASINs: {', '.join(ASINS)}")
     print("=" * 60)
 
-    try:
-        items = fetch_search_results()
-    except Exception as e:
-        print(f"[{get_ist_now()}] Failed to fetch: {e}")
-        return False
-
-    if not items:
-        print(f"[{get_ist_now()}] No results (captcha hit or page changed)")
-        return False
-
     matches = []
-    for item in items:
-        disc_str = f"{item['discount_pct']:.1f}% off" if item['discount_pct'] > 0 else "no discount"
-        print(
-            f"[{get_ist_now()}] {item['asin']}  Rs.{int(item['current_price']):6d}  "
-            f"{disc_str:12s}  {item['title'][:60]}"
-        )
-        if item["discount_pct"] >= MIN_DISCOUNT_PCT:
-            matches.append(item)
+    for asin in ASINS:
+        info = fetch_gift_card(asin)
+        if not info:
+            continue
+        disc = f"{info['discount_pct']:.1f}% off" if info["discount_pct"] > 0 else "no discount"
+        print(f"[{get_ist_now()}] {info['asin']}  Rs.{int(info['price']):6d}  {disc:12s}  {info['title'][:50]}")
+        if info["discount_pct"] >= MIN_DISCOUNT_PCT:
+            matches.append(info)
 
     if not matches:
-        print(f"[{get_ist_now()}] No gift cards with >={MIN_DISCOUNT_PCT}% discount.")
+        print(f"[{get_ist_now()}] No gift cards with >={MIN_DISCOUNT_PCT}% upfront discount.")
         return False
 
     print(f"[{get_ist_now()}] MATCH: {len(matches)} discounted item(s)")
-
     if not should_send_alert("amazon"):
         return False
 
