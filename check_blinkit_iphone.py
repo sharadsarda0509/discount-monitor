@@ -40,6 +40,8 @@ except ImportError:
     print("Error: pip install -r requirements.txt")
     sys.exit(1)
 
+import brightdata_browser
+
 IST = timezone(timedelta(hours=5, minutes=30))
 COOLDOWN_HOURS = float(os.environ.get(
     "BLINKIT_IPHONE_COOLDOWN_HOURS",
@@ -81,6 +83,11 @@ def _coords():
 COORDS = _coords()
 
 MODELS = [m.strip() for m in os.environ.get("BLINKIT_MODELS", "15,16,17").split(",") if m.strip()]
+
+# Minimum minutes between actual Scraping Browser scrapes. The workflow fires every 5 min,
+# but each browser scrape spends Bright Data credits, so throttle to conserve them.
+# 0 = scrape on every trigger (only sensible in direct mode). Ignored in direct mode.
+RUN_INTERVAL_MIN = float(os.environ.get("BLINKIT_RUN_INTERVAL_MIN", "0"))
 
 # Public guest auth key -- stable for anonymous searches (same as check_blinkit_amazon.py).
 _AUTH_KEY = os.environ.get(
@@ -163,20 +170,107 @@ def record_alert(alert_type: str):
     STATE_FILE.write_text(json.dumps(state, indent=2))
 
 
+def _recently_scraped() -> bool:
+    """True if a browser scrape ran within RUN_INTERVAL_MIN -- skip to conserve credits."""
+    if RUN_INTERVAL_MIN <= 0:
+        return False
+    try:
+        state = json.loads(STATE_FILE.read_text()) if STATE_FILE.exists() else {}
+        last = state.get("blinkit_iphone_lastrun")
+        if not last:
+            return False
+        last_time = datetime.fromisoformat(last)
+        if last_time.tzinfo is None:
+            last_time = last_time.replace(tzinfo=IST)
+        elapsed_min = (get_ist_now() - last_time).total_seconds() / 60
+        if elapsed_min < RUN_INTERVAL_MIN:
+            print(f"[{get_ist_now()}] Throttled: last scrape {elapsed_min:.0f}m ago "
+                  f"(< {RUN_INTERVAL_MIN:.0f}m) -- skipping to save Scraping Browser credits")
+            return True
+        return False
+    except Exception:
+        return False
+
+
+def _mark_scraped():
+    STATE_DIR.mkdir(exist_ok=True)
+    state = {}
+    if STATE_FILE.exists():
+        try:
+            state = json.loads(STATE_FILE.read_text())
+        except Exception:
+            pass
+    state["blinkit_iphone_lastrun"] = get_ist_now().isoformat()
+    STATE_FILE.write_text(json.dumps(state, indent=2))
+
+
+_SEARCH_BODY = {
+    "applied_filters": None, "monet_assets": [], "postback_meta": {},
+    "previous_search_query": "", "processed_rails": {}, "similar_entities": None,
+    "sort": "", "vertical_cards_processed": 0,
+}
+
+
+def _search_url(query: str) -> str:
+    return (f"https://blinkit.com/v1/layout/search?q={query.replace(' ', '+')}"
+            f"&search_type=type_to_search")
+
+
+def _search_headers(query: str, lat: str, lon: str) -> Dict[str, str]:
+    return {**BASE_HEADERS, "auth_key": _AUTH_KEY, "lat": lat, "lon": lon,
+            "Referer": f"https://blinkit.com/s/?q={query.replace(' ', '+')}"}
+
+
+def _snippets_from_json(payload: Dict[str, Any]) -> List[Dict[str, Any]]:
+    return (payload or {}).get("response", {}).get("snippets", [])
+
+
 def search_snippets(query: str, lat: str, lon: str) -> List[Dict[str, Any]]:
-    headers = {**BASE_HEADERS, "auth_key": _AUTH_KEY, "lat": lat, "lon": lon,
-               "Referer": f"https://blinkit.com/s/?q={query.replace(' ', '+')}"}
-    body = {
-        "applied_filters": None, "monet_assets": [], "postback_meta": {},
-        "previous_search_query": "", "processed_rails": {}, "similar_entities": None,
-        "sort": "", "vertical_cards_processed": 0,
-    }
-    r = _post(
-        f"https://blinkit.com/v1/layout/search?q={query.replace(' ', '+')}&search_type=type_to_search",
-        headers=headers, json=body, timeout=30,
-    )
+    """Direct (curl_cffi) search -- used when the Scraping Browser is not configured."""
+    r = _post(_search_url(query), headers=_search_headers(query, lat, lon),
+              json=_SEARCH_BODY, timeout=30)
     r.raise_for_status()
-    return r.json().get("response", {}).get("snippets", [])
+    return _snippets_from_json(r.json())
+
+
+def collect_snippets(coords, queries) -> Dict[str, Dict[str, List[Dict[str, Any]]]]:
+    """Return {store: {query: snippets}} for every (coord, query).
+
+    When BRIGHTDATA_BROWSER_WSS is set, all searches run in ONE Bright Data Scraping
+    Browser session (real Chrome on a residential IP) -- required because Blinkit's
+    iPhone search returns 403 to bare API clients and to datacenter IPs, but 200 from a
+    genuine browser session. Otherwise falls back to direct curl_cffi requests.
+    """
+    out: Dict[str, Dict[str, List[Dict[str, Any]]]] = {}
+    if brightdata_browser.is_configured():
+        specs, index = [], []
+        for lat, lon, store in coords:
+            for q in queries:
+                specs.append({"url": _search_url(q), "method": "POST",
+                              "headers": _search_headers(q, lat, lon),
+                              "body": json.dumps(_SEARCH_BODY)})
+                index.append((store, q))
+        resp = brightdata_browser.browser_fetch("https://blinkit.com/", specs) or []
+        for (store, q), r in zip(index, resp):
+            snippets: List[Dict[str, Any]] = []
+            if r and r.get("status") == 200:
+                try:
+                    snippets = _snippets_from_json(json.loads(r.get("text") or "{}"))
+                except ValueError:
+                    pass
+            else:
+                print(f"[{get_ist_now()}] browser search '{q}' @ {store}: "
+                      f"HTTP {r.get('status') if r else 'n/a'}")
+            out.setdefault(store, {})[q] = snippets
+    else:
+        for lat, lon, store in coords:
+            for q in queries:
+                try:
+                    out.setdefault(store, {})[q] = search_snippets(q, lat, lon)
+                except requests.RequestException as e:
+                    print(f"[{get_ist_now()}] search failed for '{q}' @ {store}: {e}")
+                    out.setdefault(store, {})[q] = []
+    return out
 
 
 def parse_handsets(snippets: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -257,10 +351,19 @@ def send_alert(items: List[Dict[str, Any]]) -> bool:
 
 
 def check_blinkit_iphone():
+    use_browser = brightdata_browser.is_configured()
     print("=" * 60)
     print(f"Blinkit iPhone monitor -- {get_ist_now()}")
     print(f"Stores: {', '.join(c[2] for c in COORDS)}   Models: {', '.join(MODELS)}")
+    print(f"Source: {'Bright Data Scraping Browser' if use_browser else 'direct'}")
     print("=" * 60)
+
+    if use_browser and _recently_scraped():
+        return False
+
+    snippets_by_store = collect_snippets(COORDS, SEARCH_QUERIES)
+    if use_browser:
+        _mark_scraped()
 
     in_stock: List[Dict[str, Any]] = []
     in_stock_keys = set()
@@ -269,12 +372,7 @@ def check_blinkit_iphone():
     for lat, lon, store in COORDS:
         seen: Dict[str, Dict[str, Any]] = {}
         for q in SEARCH_QUERIES:
-            try:
-                snippets = search_snippets(q, lat, lon)
-            except requests.RequestException as e:
-                print(f"[{get_ist_now()}] search failed for '{q}' @ {store}: {e}")
-                continue
-            for p in parse_handsets(snippets):
+            for p in parse_handsets(snippets_by_store.get(store, {}).get(q, [])):
                 seen.setdefault(p["name"], p)
 
         if not seen:

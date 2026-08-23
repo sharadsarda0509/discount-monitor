@@ -194,6 +194,19 @@ jobs:
           BLINKIT_IPHONE_COOLDOWN_HOURS: "12"
           BLINKIT_LAT: ${{ secrets.BLINKIT_LAT }}
           BLINKIT_LON: ${{ secrets.BLINKIT_LON }}
+          # Bright Data Scraping Browser (CDP/wss endpoint) -- required: Blinkit's iPhone
+          # search returns 403 to datacenter IPs and to bare API clients, but 200 from a
+          # real browser session. When unset, the script falls back to a direct request.
+          BRIGHTDATA_BROWSER_WSS: ${{ secrets.BRIGHTDATA_BROWSER_WSS }}
+          # Optional 2nd/3rd Scraping Browser endpoints -- rotated per run to spread
+          # credit/rate load (and multiply the free budget if they're separate accounts).
+          BRIGHTDATA_BROWSER_WSS_2: ${{ secrets.BRIGHTDATA_BROWSER_WSS_2 }}
+          BRIGHTDATA_BROWSER_WSS_3: ${{ secrets.BRIGHTDATA_BROWSER_WSS_3 }}
+          # Only actually hit the browser at most once per this many minutes (the workflow
+          # fires every 5 min); throttled to conserve the limited Scraping Browser credits.
+          # 120 = every 2h (safe on a single 5,000-credit account). Lower to 60 if you have
+          # two separate Bright Data accounts (the two WSS secrets ~= 10,000 credits).
+          BLINKIT_RUN_INTERVAL_MIN: "120"
         run: |
           python check_blinkit_iphone.py
         continue-on-error: true

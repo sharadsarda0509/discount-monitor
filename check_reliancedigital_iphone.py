@@ -7,13 +7,20 @@ APIs are clean, no-auth JSON (only a static, public application token in the
 Authorization header -- reverse-engineered via DevTools). No signature, no cookies,
 no JS execution needed -- works from a plain server request.
 
-Flow (all GET, static Bearer token):
+Flow (static Bearer token):
   1. Search   : /api/service/application/catalog/v1.0/products/?q=apple+iphone+<model>
   2. Sizes    : /api/service/application/catalog/v1.0/products/{slug}/sizes/
                 -> national availability (quantity, is_available)
-  3. Pincode  : /api/service/application/catalog/v1.0/products/{slug}/sizes/{size}/
+  3. Price    : /api/service/application/catalog/v1.0/products/{slug}/sizes/{size}/
                 pincode/{pincode}/price/
-                -> 200 + quantity>0 means deliverable/serviceable to that pincode
+                -> article_id + price. NOTE: this endpoint IGNORES the pincode and always
+                returns a national "optimal seller" quantity/store, so its quantity is NOT a
+                serviceability signal -- it is used here only to obtain article_id + price.
+  4. Inventory: POST /ext/raven-api/inventory/multi/articles-v2
+                body {"articles":[{"article_id":<id>,"custom_json":{},"quantity":0}],
+                      "phone_number":"0","pincode":<pincode>,"request_page":"pdp"}
+                -> data.success == true means genuinely in stock AND deliverable to <pincode>
+                (this is the same call the website makes when you set a delivery pincode).
 
 Handsets are discovered dynamically (not hardcoded), so a new model -- e.g. iPhone 17
 -- is picked up the day it lands in the catalog, without any code change.
@@ -38,10 +45,12 @@ try:
     from curl_cffi import requests as cffi_requests
     _SESSION = cffi_requests.Session(impersonate="chrome120")
     def _get(url, **kw): return _SESSION.get(url, **kw)
+    def _post(url, **kw): return _SESSION.post(url, **kw)
 except ImportError:
     import requests as _requests
     _SESSION = _requests.Session()
     def _get(url, **kw): return _SESSION.get(url, **kw)
+    def _post(url, **kw): return _SESSION.post(url, **kw)
 
 try:
     import requests  # for RequestException type only
@@ -64,6 +73,8 @@ MODELS = [m.strip() for m in os.environ.get("RELIANCE_MODELS", "15,16,17").split
 
 BASE = "https://www.reliancedigital.in/api/service/application/catalog/v1.0"
 PROMO_URL = "https://www.reliancedigital.in/ext/raven-api/promotions"
+# Authoritative per-pincode stock + delivery check (the call the site makes on pincode set).
+INVENTORY_URL = "https://www.reliancedigital.in/ext/raven-api/inventory/multi/articles-v2"
 PRODUCT_BASE_URL = "https://www.reliancedigital.in/product/"
 SEARCH_URL = f"https://www.reliancedigital.in/search?q="
 
@@ -177,8 +188,44 @@ def search_handsets() -> List[Dict[str, Any]]:
     return list(seen.values())
 
 
+def pincode_serviceable(article_id: str) -> Optional[Dict[str, Any]]:
+    """Authoritative per-pincode stock + deliverability check for an article.
+
+    The catalog /price/ endpoint ignores the pincode (it returns a national "optimal
+    seller" store/quantity regardless of the pincode in the URL), so it cannot tell us
+    whether an item is actually orderable to PINCODE. This endpoint -- the same one the
+    website calls when you set a delivery pincode -- does respect the pincode.
+
+    Returns {qty, display} when deliverable (data.success == true), else None.
+    The `custom_json` key must be present (even as {}) or the API returns a spurious
+    out-of-stock response.
+    """
+    try:
+        r = _post(
+            INVENTORY_URL,
+            headers=HEADERS,
+            json={
+                "articles": [{"article_id": article_id, "custom_json": {}, "quantity": 0}],
+                "phone_number": "0",
+                "pincode": PINCODE,
+                "request_page": "pdp",
+            },
+            timeout=30,
+        )
+        r.raise_for_status()
+        data = (r.json() or {}).get("data") or {}
+    except (requests.RequestException, ValueError) as e:
+        print(f"[{get_ist_now()}] inventory check failed for {article_id}: {e}")
+        return None
+
+    if not data.get("success"):
+        return None
+    art = (data.get("articles") or [{}])[0]
+    return {"qty": art.get("quantity") or 1, "display": art.get("display_message") or ""}
+
+
 def check_pincode_stock(handset: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-    """Return stock info if the handset is serviceable at PINCODE, else None."""
+    """Return stock info if the handset is in stock AND deliverable to PINCODE, else None."""
     slug = handset["slug"]
     # 1) sizes -> national availability + size value
     try:
@@ -196,7 +243,7 @@ def check_pincode_stock(handset: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         return None
     size = avail[0].get("value") or "OS"
 
-    # 2) pincode price -> deliverable qty to PINCODE
+    # 2) price -> article_id + price (quantity/store here are national, NOT pincode-accurate)
     try:
         r = _get(f"{BASE}/products/{slug}/sizes/{size}/pincode/{PINCODE}/price/",
                  headers=HEADERS, timeout=30)
@@ -207,17 +254,22 @@ def check_pincode_stock(handset: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         print(f"[{get_ist_now()}] pincode price failed for {slug}: {e}")
         return None
 
-    qty = price.get("quantity") or 0
-    if qty <= 0:
-        return None
     eff = (price.get("price_per_piece") or price.get("price") or {})
-    # article_id looks like "6780_494423013"; the promotions API wants the trailing id
+    # article_id looks like "6780_494423013"; the promotions/inventory APIs want the trailing id
     article_raw = str(price.get("article_id") or "")
     article_id = article_raw.split("_")[-1] if article_raw else ""
+    if not article_id:
+        return None
+
+    # 3) authoritative per-pincode serviceability -- this is the real stock gate
+    serv = pincode_serviceable(article_id)
+    if not serv:
+        return None
+
     return {
         "name": handset["name"],
         "slug": slug,
-        "qty": qty,
+        "qty": serv["qty"],
         "effective": eff.get("effective"),
         "marked": eff.get("marked"),
         "article_id": article_id,

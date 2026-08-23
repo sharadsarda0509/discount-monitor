@@ -15,9 +15,11 @@ Flow per run:
   2. For each watched product (id + slug) -> GET the pd SSR json -> read availability
      (avail_status "001" = in stock / "Add"; "000" = out of stock / "Notify Me")
 
-Discovery note: BigBasket's own search can't be queried headlessly, so watched products
-are seeded here (BIGBASKET_PRODUCTS) with the base iPhone SKUs BigBasket currently lists.
-Add a product the moment it appears with:  id:slug,id:slug  (see PRODUCTS below).
+Discovery: base iPhone 15/16/17 SKUs are discovered dynamically each run from BigBasket's
+listing service (search "iphone"). The listing service is Akamai-gated but returns JSON
+reliably once the homepage has been fetched in the same session (fetch_build_id does that),
+so new colours or a new model (e.g. iPhone 17) are picked up automatically -- no code change.
+BIGBASKET_PRODUCTS still works as a manual seed / fallback if discovery ever returns nothing.
 Location is fully config-driven via BIGBASKET_LAT / BIGBASKET_LON -- no hardcoded store.
 """
 
@@ -65,15 +67,22 @@ PINCODE = os.environ.get("BIGBASKET_PINCODE", "560035").strip()
 
 MODELS = [m.strip() for m in os.environ.get("BIGBASKET_MODELS", "15,16,17").split(",") if m.strip()]
 
-# Watched products as "id:slug" (comma-separated). Seeded with the base iPhone SKUs
-# BigBasket lists today; extend via the BIGBASKET_PRODUCTS env var without code changes.
+# Manual seed / fallback watch list as "id:slug" (comma-separated), used when dynamic
+# discovery returns nothing. Kept current with the base iPhone SKUs BigBasket lists today;
+# override via the BIGBASKET_PRODUCTS env var without code changes.
 _DEFAULT_PRODUCTS = (
     "40332363:apple-iphone-15-128gb-blue-1-unit,"
-    "40330602:apple-iphone-16-128gb-black-1-n"
+    "40331223:apple-iphone-15-128gb-black,"
+    "40330603:apple-iphone-16-128gb-white-1-n,"
+    "40356301:apple-iphone-17-256gb-white-1-unit"
 )
 
 HOME_URL = "https://www.bigbasket.com/"
 PRODUCT_PAGE = "https://www.bigbasket.com/ps/?q=iphone"
+# Search/listing service used for dynamic SKU discovery (Akamai-gated; works once the
+# homepage is fetched in the same session -- see fetch_build_id).
+LISTING_URL = "https://www.bigbasket.com/listing-svc/v2/products"
+SEARCH_TERM = os.environ.get("BIGBASKET_SEARCH_TERM", "iphone")
 
 UA = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
@@ -168,6 +177,43 @@ def fetch_build_id() -> Optional[str]:
     except (requests.RequestException, ValueError) as e:
         print(f"[{get_ist_now()}] homepage/buildId fetch failed: {e}")
         return None
+
+
+def discover_products(max_pages: int = 5) -> List[Tuple[str, str]]:
+    """Discover base iPhone 15/16/17 SKUs from BigBasket search (listing-svc).
+
+    Mirrors the Reliance monitor's dynamic discovery: a new colour or a new model
+    (e.g. iPhone 17) is picked up the day BigBasket lists it, with no code change.
+    Requires the homepage to have been fetched first in the same session (fetch_build_id
+    does that) so the Akamai cookies are seeded. Returns a list of (id, slug) tuples;
+    empty on failure so the caller can fall back to the seeded BIGBASKET_PRODUCTS list.
+    """
+    found: Dict[str, str] = {}
+    for page in range(1, max_pages + 1):
+        try:
+            r = _get(LISTING_URL,
+                     params={"type": "ps", "slug": SEARCH_TERM, "page": str(page)},
+                     headers={"User-Agent": UA, "x-channel": "BB-WEB", "accept": "*/*",
+                              "referer": PRODUCT_PAGE},
+                     cookies=_cookies(), timeout=30)
+            if r.status_code != 200:
+                break
+            tabs = (r.json() or {}).get("tabs") or []
+        except (requests.RequestException, ValueError) as e:
+            print(f"[{get_ist_now()}] discovery page {page} failed: {e}")
+            break
+        got = 0
+        for t in tabs:
+            for p in ((t.get("product_info") or {}).get("products") or []):
+                got += 1
+                if not _is_handset((p.get("desc") or "").strip()):
+                    continue
+                m = re.search(r"/pd/(\d+)/([^/?]+)", str(p.get("absolute_url") or ""))
+                if m:
+                    found.setdefault(m.group(1), m.group(2))
+        if got == 0:
+            break
+    return list(found.items())
 
 
 def _find_product(node: Any, pid: str) -> Optional[Dict[str, Any]]:
@@ -299,8 +345,17 @@ def check_bigbasket_iphone():
         return False
     print(f"[{get_ist_now()}] buildId={build_id}")
 
+    # Dynamic discovery (like Reliance) merged with the seeded fallback, de-duped by id.
+    # Discovered slugs (from the live listing) win over the seed.
+    products: Dict[str, str] = {pid: slug for pid, slug in _products()}
+    discovered = discover_products()
+    for pid, slug in discovered:
+        products[pid] = slug
+    print(f"[{get_ist_now()}] discovered {len(discovered)} SKU(s) via search; "
+          f"watching {len(products)} total")
+
     in_stock = []
-    for pid, slug in _products():
+    for pid, slug in products.items():
         info = check_product(build_id, pid, slug)
         if not info:
             continue
