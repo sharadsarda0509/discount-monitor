@@ -16,7 +16,7 @@ This endpoint:
 When stock IS available pickupDisplay == "available" and pickupSearchQuote
 contains "Today" or a date. Currently unavailable shows pickupDisplay == "ineligible".
 
-Pattern mirrors check_noones.py: fetch → interpret → optional ntfy + email + cooldown.
+Pattern mirrors check_bitvalve.py: fetch → interpret → optional ntfy + email + cooldown.
 """
 
 import os
