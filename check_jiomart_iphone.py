@@ -25,6 +25,8 @@ from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+from iphone_models import models_summary
+
 try:
     import requests
 except ImportError:
@@ -586,9 +588,11 @@ def send_email_alert(pincode: str, qualifying: List[Dict], bank_offer: Optional[
         best_amount = max(best_base, bank_offer["amount"] if bank_offer else 0)
         msg = MIMEMultipart("alternative")
         if qualifying:
-            subject = f"JioMart iPhone deal: up to ₹{best_amount:,} off — {pincode}"
+            models = models_summary(m["name"] for m in qualifying)
+            subject = f"JioMart {models} deal: up to ₹{best_amount:,} off — {pincode}"
         else:
-            subject = f"JioMart iPhone: nearby stock {nearest['dist_km']:.2f}km — bank offer ₹{best_amount:,} off"
+            models = models_summary([nearest["name"]]) if nearest else "iPhone"
+            subject = f"JioMart {models}: nearby stock {nearest['dist_km']:.2f}km — bank offer ₹{best_amount:,} off"
         msg["Subject"] = subject
         msg["From"] = sender
         msg["To"] = receiver

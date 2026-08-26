@@ -35,6 +35,8 @@ from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+from iphone_models import models_summary
+
 try:
     from curl_cffi import requests as cffi_requests
     _SESSION = cffi_requests.Session(impersonate="chrome120")
@@ -284,8 +286,9 @@ def _stock_lines(items: List[Dict[str, Any]]) -> List[str]:
 
 
 def send_alert(items: List[Dict[str, Any]]) -> bool:
-    subject = f"BigBasket: iPhone in stock -- {len(items)} item(s)"
-    title = f"iPhone in stock on BigBasket ({len(items)})"
+    models = models_summary(p["name"] for p in items)
+    subject = f"BigBasket: {models} in stock -- {len(items)} item(s)"
+    title = f"{models} in stock on BigBasket ({len(items)})"
     order_url = items[0]["url"] if items else PRODUCT_PAGE
     body = "\n".join(
         ["iPhone handset(s) in stock on BigBasket:", ""]

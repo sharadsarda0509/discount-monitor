@@ -25,6 +25,8 @@ from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Any, Dict, List
 
+from iphone_models import models_summary
+
 try:
     from curl_cffi import requests as cffi_requests
     _SESSION = cffi_requests.Session(impersonate="chrome120")
@@ -302,8 +304,9 @@ def _stock_lines(items: List[Dict[str, Any]]) -> List[str]:
 
 
 def send_alert(items: List[Dict[str, Any]]) -> bool:
-    subject = f"Blinkit: iPhone in stock -- {len(items)} item(s)"
-    title = f"iPhone in stock on Blinkit ({len(items)})"
+    models = models_summary(p["name"] for p in items)
+    subject = f"Blinkit: {models} in stock -- {len(items)} item(s)"
+    title = f"{models} in stock on Blinkit ({len(items)})"
     body = "\n".join(
         ["iPhone handset(s) in stock on Blinkit (10-min delivery):", ""]
         + _stock_lines(items) + ["", f"Order now: {PRODUCT_URL}"]

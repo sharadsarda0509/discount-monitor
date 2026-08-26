@@ -37,6 +37,8 @@ from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from iphone_models import models_summary
+
 try:
     from curl_cffi import requests as cffi_requests
     _SESSION = cffi_requests.Session(impersonate="chrome120")
@@ -331,8 +333,9 @@ def _stock_lines(matches: List[Dict[str, Any]]) -> List[str]:
 
 def send_alert(matches: List[Dict[str, Any]]) -> bool:
     pins = "/".join(PINCODES)
-    subject = f"Croma: iPhone in stock @ {pins} -- {len(matches)} variant(s)"
-    title = f"iPhone in stock at Croma ({len(matches)})"
+    models = models_summary(m["name"] for m in matches)
+    subject = f"Croma: {models} in stock @ {pins} -- {len(matches)} variant(s)"
+    title = f"{models} in stock at Croma ({len(matches)})"
     click_url = matches[0]["url"] if matches else SEARCH_URL
     body = "\n".join(
         [f"iPhone in stock / serviceable at {pins} on Croma:", ""]
