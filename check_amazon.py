@@ -87,6 +87,15 @@ AMAZON_GC_MAX = int(os.environ.get("AMAZON_GC_MAX", 25))
 # 0 = every trigger. Set e.g. 20 in the workflow.
 RUN_INTERVAL_MIN = float(os.environ.get("AMAZON_RUN_INTERVAL_MIN", 0))
 
+# Dynamic ASIN discovery is the expensive part of a scan (an extra Scraping Browser session
+# to load the deals listing). The recurring Rs.5000/10000 arbitrage lives on the known ASINs
+# (always checked), so we don't need fresh discovery every scan: run it at most once per this
+# many minutes and reuse the last discovered set on the cheap scans in between. This lets the
+# scan interval drop (lower detection lag) without a proportional jump in browser credits.
+# 0 = discover every scan (previous behaviour). Festival ASINs rotate slowly enough that a
+# few hours between discoveries is fine.
+DISCOVERY_INTERVAL_MIN = float(os.environ.get("AMAZON_DISCOVERY_INTERVAL_MIN", 0))
+
 # No cookies on purpose (see module docstring). Plain desktop Chrome UA + language.
 HEADERS = {
     "User-Agent": ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
@@ -190,6 +199,52 @@ def _mark_ran():
             pass
     state["amazon_lastrun"] = get_ist_now().isoformat()
     STATE_FILE.write_text(json.dumps(state, indent=2))
+
+
+def _discovery_due() -> bool:
+    """True if dynamic ASIN discovery should run this scan. Discovery is throttled separately
+    from the scan itself (DISCOVERY_INTERVAL_MIN): the cheap scans in between reuse the last
+    discovered set, so they only pay for the known-ASIN fetches, not another listing session."""
+    if DISCOVERY_INTERVAL_MIN <= 0:
+        return True
+    try:
+        state = json.loads(STATE_FILE.read_text()) if STATE_FILE.exists() else {}
+        last = state.get("amazon_lastdiscovery")
+        if not last:
+            return True
+        last_time = datetime.fromisoformat(last)
+        if last_time.tzinfo is None:
+            last_time = last_time.replace(tzinfo=IST)
+        elapsed_min = (get_ist_now() - last_time).total_seconds() / 60
+        if elapsed_min < DISCOVERY_INTERVAL_MIN:
+            print(f"[{get_ist_now()}] Discovery throttled: last {elapsed_min:.0f}m ago "
+                  f"(< {DISCOVERY_INTERVAL_MIN:.0f}m) -- reusing cached ASINs")
+            return False
+        return True
+    except Exception:
+        return True
+
+
+def _mark_discovery(discovered: List[str]):
+    """Stamp the discovery time and cache the discovered ASINs for the cheap scans in between."""
+    STATE_DIR.mkdir(exist_ok=True)
+    state = {}
+    if STATE_FILE.exists():
+        try:
+            state = json.loads(STATE_FILE.read_text())
+        except Exception:
+            pass
+    state["amazon_lastdiscovery"] = get_ist_now().isoformat()
+    state["amazon_discovered"] = discovered
+    STATE_FILE.write_text(json.dumps(state, indent=2))
+
+
+def _cached_discovered() -> List[str]:
+    try:
+        state = json.loads(STATE_FILE.read_text()) if STATE_FILE.exists() else {}
+        return [a for a in (state.get("amazon_discovered") or []) if isinstance(a, str)]
+    except Exception:
+        return []
 
 
 def _extract_gc_asins(html: str, max_n: int) -> List[str]:
@@ -414,13 +469,22 @@ def check_amazon():
         return False
 
     use_browser = brightdata_browser.is_configured()
-    if use_browser:
-        # Amazon CAPTCHAs the datacenter IP -> discover via the residential Scraping Browser.
-        discovered = discover_asins_via_browser(AMAZON_GC_MAX)
-        src = "Bright Data Scraping Browser"
+    if _discovery_due():
+        if use_browser:
+            # Amazon CAPTCHAs the datacenter IP -> discover via the residential Scraping Browser.
+            discovered = discover_asins_via_browser(AMAZON_GC_MAX)
+            src = "Bright Data Scraping Browser"
+        else:
+            discovered = discover_asins(AMAZON_GC_MAX)  # direct (residential/local)
+            src = "direct"
+        if discovered:
+            _mark_discovery(discovered)  # cache for the cheap scans until the next window
+        else:
+            discovered = _cached_discovered()  # discovery came back empty -> reuse last good set
+            src += " (empty, reusing cache)"
     else:
-        discovered = discover_asins(AMAZON_GC_MAX)  # direct (residential/local)
-        src = "direct"
+        discovered = _cached_discovered()  # cheap scan: skip the listing session, reuse last set
+        src = "cached discovery"
     # The deals listing returns a different subset per session, so union discovery with the
     # known Rs.5000 ASINs (known first so they survive the cap) for stable coverage.
     parents = list(dict.fromkeys(ASINS + discovered))[:AMAZON_GC_MAX]

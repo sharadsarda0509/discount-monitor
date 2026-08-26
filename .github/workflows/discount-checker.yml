@@ -5,6 +5,14 @@ on:
   # (GitHub Actions scheduler is unreliable at sub-10-minute intervals)
   workflow_dispatch:
 
+# Serialize runs so a slow/queued run doesn't let the next 5-min dispatch stack
+# on top of it. Prevents pile-ups (and the startup_failure clusters they cause)
+# when GitHub's hosted-runner allocation is congested. Never cancel a run in
+# progress -- each run does real scraping work we don't want to abort midway.
+concurrency:
+  group: discount-monitor
+  cancel-in-progress: false
+
 jobs:
   check-discount:
     runs-on: ubuntu-latest
@@ -67,8 +75,8 @@ jobs:
           # Amazon physical gift card: 24h cool-off. Once a discount is found it also skips
           # scanning entirely for 24h (AMAZON_FOUND_COOLDOWN_HOURS) -- no repeat alerts, no
           # Bright Data credits spent re-checking the same live deal.
-          ALERT_COOLDOWN_HOURS: "24"
-          AMAZON_FOUND_COOLDOWN_HOURS: "24"
+          ALERT_COOLDOWN_HOURS: "6"
+          AMAZON_FOUND_COOLDOWN_HOURS: "6"
           AMAZON_MIN_DISCOUNT: "2.0"
           # Amazon CAPTCHAs the datacenter IP, so on CI this runs through the Scraping
           # Browser (residential): it discovers the current gift-card ASINs from the deals
@@ -78,8 +86,15 @@ jobs:
           BRIGHTDATA_BROWSER_WSS: ${{ secrets.BRIGHTDATA_BROWSER_WSS }}
           BRIGHTDATA_BROWSER_WSS_2: ${{ secrets.BRIGHTDATA_BROWSER_WSS_2 }}
           BRIGHTDATA_BROWSER_WSS_3: ${{ secrets.BRIGHTDATA_BROWSER_WSS_3 }}
+          BRIGHTDATA_BROWSER_WSS_4: ${{ secrets.BRIGHTDATA_BROWSER_WSS_4 }}
+          BRIGHTDATA_BROWSER_WSS_5: ${{ secrets.BRIGHTDATA_BROWSER_WSS_5 }}
+          BRIGHTDATA_BROWSER_WSS_6: ${{ secrets.BRIGHTDATA_BROWSER_WSS_6 }}
           AMAZON_GC_MAX: "25"
-          AMAZON_RUN_INTERVAL_MIN: "120"
+          # Scan every 30 min (max ~30-min detection lag), but only run the expensive dynamic
+          # discovery every 4h -- the cheap scans in between reuse the last discovered set +
+          # always-checked known ASINs, so higher frequency doesn't blow the browser budget.
+          AMAZON_RUN_INTERVAL_MIN: "30"
+          AMAZON_DISCOVERY_INTERVAL_MIN: "240"
         run: |
           python check_amazon.py
         continue-on-error: true
@@ -187,6 +202,9 @@ jobs:
           BRIGHTDATA_BROWSER_WSS: ${{ secrets.BRIGHTDATA_BROWSER_WSS }}
           BRIGHTDATA_BROWSER_WSS_2: ${{ secrets.BRIGHTDATA_BROWSER_WSS_2 }}
           BRIGHTDATA_BROWSER_WSS_3: ${{ secrets.BRIGHTDATA_BROWSER_WSS_3 }}
+          BRIGHTDATA_BROWSER_WSS_4: ${{ secrets.BRIGHTDATA_BROWSER_WSS_4 }}
+          BRIGHTDATA_BROWSER_WSS_5: ${{ secrets.BRIGHTDATA_BROWSER_WSS_5 }}
+          BRIGHTDATA_BROWSER_WSS_6: ${{ secrets.BRIGHTDATA_BROWSER_WSS_6 }}
           BLINKIT_AMAZON_RUN_INTERVAL_MIN: "120"
         run: |
           python check_blinkit_amazon.py
@@ -219,10 +237,13 @@ jobs:
           # search returns 403 to datacenter IPs and to bare API clients, but 200 from a
           # real browser session. When unset, the script falls back to a direct request.
           BRIGHTDATA_BROWSER_WSS: ${{ secrets.BRIGHTDATA_BROWSER_WSS }}
-          # Optional 2nd/3rd Scraping Browser endpoints -- rotated per run to spread
+          # Optional additional Scraping Browser endpoints -- rotated per run to spread
           # credit/rate load (and multiply the free budget if they're separate accounts).
           BRIGHTDATA_BROWSER_WSS_2: ${{ secrets.BRIGHTDATA_BROWSER_WSS_2 }}
           BRIGHTDATA_BROWSER_WSS_3: ${{ secrets.BRIGHTDATA_BROWSER_WSS_3 }}
+          BRIGHTDATA_BROWSER_WSS_4: ${{ secrets.BRIGHTDATA_BROWSER_WSS_4 }}
+          BRIGHTDATA_BROWSER_WSS_5: ${{ secrets.BRIGHTDATA_BROWSER_WSS_5 }}
+          BRIGHTDATA_BROWSER_WSS_6: ${{ secrets.BRIGHTDATA_BROWSER_WSS_6 }}
           # Only actually hit the browser at most once per this many minutes (the workflow
           # fires every 5 min); throttled to conserve the limited Scraping Browser credits.
           # 120 = every 2h (safe on a single 5,000-credit account). Lower to 60 if you have

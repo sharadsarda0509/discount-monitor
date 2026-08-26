@@ -25,6 +25,7 @@ Returns None when no endpoint is configured so callers can fall back to a direct
 
 import os
 import random
+import re
 from typing import Any, Dict, List, Optional
 
 WSS_ENV = "BRIGHTDATA_BROWSER_WSS"
@@ -52,12 +53,16 @@ async (calls) => {
 
 
 def _wss_urls() -> List[str]:
-    urls = []
-    for key in (WSS_ENV, WSS_ENV + "_2", WSS_ENV + "_3"):
-        val = (os.environ.get(key) or "").strip()
-        if val:
-            urls.append(val)
-    return urls
+    """Collect the base endpoint plus any numbered siblings (BRIGHTDATA_BROWSER_WSS and
+    _2, _3, ... _N) so adding an endpoint only means setting a new secret -- no code change."""
+    pat = re.compile(rf"^{re.escape(WSS_ENV)}(?:_(\d+))?$")
+    found: Dict[int, str] = {}
+    for key, val in os.environ.items():
+        m = pat.match(key)
+        val = (val or "").strip()
+        if m and val:
+            found[int(m.group(1)) if m.group(1) else 1] = val
+    return [found[i] for i in sorted(found)]
 
 
 def is_configured() -> bool:
