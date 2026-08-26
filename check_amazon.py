@@ -51,18 +51,22 @@ import brightdata_browser
 
 IST = timezone(timedelta(hours=5, minutes=30))
 COOLDOWN_HOURS = int(os.environ.get('ALERT_COOLDOWN_HOURS', 12))
+# Once a discount is found + alerted, skip scanning entirely for this many hours -- no repeat
+# alerts for the same promo, and no Bright Data credits burned re-checking a known live deal.
+FOUND_COOLDOWN_HOURS = float(os.environ.get('AMAZON_FOUND_COOLDOWN_HOURS', 24))
 STATE_DIR = Path('.alert_state')
 STATE_FILE = STATE_DIR / 'last_alert.json'
 NTFY_TOPIC = os.environ.get('NTFY_TOPIC', '')
 
 MIN_DISCOUNT_PCT = float(os.environ.get("AMAZON_MIN_DISCOUNT", 2.0))
 
-# Fallback fixed-denomination Amazon Pay gift-card ASINs, used when dynamic discovery
-# returns nothing (Amazon served the JS-shell search variant / a captcha). These are the
-# current physical + digital gifting cards surfaced by the deals listing; refresh them if
-# Amazon rotates the festival ASINs again. Override via AMAZON_GC_ASINS.
-_DEFAULT_ASINS = ("B0DTJ2Q579,B0DB61H2KX,B0B838CT1X,B0CCSJPV6T,"
-                  "B0H5WGYP74,B0H5WRQ52J,B0H5WT5LDV")
+# Known Rs.5000 Amazon Pay gift-card ASINs, always checked (unioned with discovery) so the
+# recurring ~2% arbitrage (Rs.4900 for a Rs.5000 card) is caught even when the deals listing
+# omits them or returns nothing. Only one ASIN per card is needed -- each is expanded to its
+# Rs.5000/10000 twister siblings at scan time. Refresh when Amazon rotates these; override via
+# AMAZON_GC_ASINS. (Festival/gifting cards top out at Rs.3000, so they're intentionally absent:
+# the Rs.5000/10000-only filter would drop them anyway.)
+_DEFAULT_ASINS = "B0GGRCP3ZF,B0GGQXZQ1H,B0BSFB9CHS"
 ASINS = [a.strip() for a in os.environ.get("AMAZON_GC_ASINS", _DEFAULT_ASINS).split(",") if a.strip()]
 
 # Dynamic discovery: pull gift-card ASINs from the deals listing each run, then verify each
@@ -128,6 +132,30 @@ def record_alert(alert_type: str):
             pass
     state[alert_type] = get_ist_now().isoformat()
     STATE_FILE.write_text(json.dumps(state, indent=2))
+
+
+def _found_recently() -> bool:
+    """True if an Amazon discount was already found + alerted within FOUND_COOLDOWN_HOURS.
+    Once a promo is found we skip scanning entirely for a day: no repeat alerts, and no
+    Bright Data credits spent re-checking the same live discount."""
+    if FOUND_COOLDOWN_HOURS <= 0:
+        return False
+    try:
+        state = json.loads(STATE_FILE.read_text()) if STATE_FILE.exists() else {}
+        last = state.get("amazon")
+        if not last:
+            return False
+        last_time = datetime.fromisoformat(last)
+        if last_time.tzinfo is None:
+            last_time = last_time.replace(tzinfo=IST)
+        elapsed_h = (get_ist_now() - last_time).total_seconds() / 3600
+        if elapsed_h < FOUND_COOLDOWN_HOURS:
+            print(f"[{get_ist_now()}] Found-cooldown: discount alerted {elapsed_h:.1f}h ago "
+                  f"(< {FOUND_COOLDOWN_HOURS:.0f}h) -- skipping scan")
+            return True
+        return False
+    except Exception:
+        return False
 
 
 def _recently_ran() -> bool:
@@ -260,33 +288,57 @@ def _parse_gift_card(asin: str, html: str) -> Optional[Dict[str, Any]]:
     }
 
 
-def fetch_gift_card(asin: str) -> Optional[Dict[str, Any]]:
-    """Direct (curl_cffi) product-page fetch -- works from a residential IP; the GitHub
-    Actions datacenter IP is CAPTCHA'd by Amazon (use the Scraping Browser path there)."""
+# We only care about Rs.5000 / Rs.10000 cards -- that's where the upfront arbitrage lands.
+DENOMS_WANTED = {"5000", "10000"}
+
+
+def _fetch_pages(asins: List[str], use_browser: bool) -> Dict[str, str]:
+    """Fetch product-page HTML for each ASIN -> {asin: html}. The browser path batches every
+    ASIN into ONE Scraping Browser session (residential IP, real browser -> no CAPTCHA, minimal
+    credits); the direct path uses curl_cffi (works from a residential IP; the GitHub Actions
+    datacenter IP is CAPTCHA'd by Amazon, so CI must use the browser path)."""
+    pages: Dict[str, str] = {}
+    if not asins:
+        return pages
+    if use_browser:
+        calls = [{"url": f"https://www.amazon.in/dp/{a}", "method": "GET"} for a in asins]
+        resp = brightdata_browser.browser_fetch("https://www.amazon.in/", calls) or []
+        for asin, r in zip(asins, resp):
+            if r and r.get("status") == 200:
+                pages[asin] = r.get("text") or ""
+            else:
+                print(f"[{get_ist_now()}] {asin}: browser HTTP {r.get('status') if r else 'n/a'}")
+    else:
+        for asin in asins:
+            try:
+                r = _get(f"https://www.amazon.in/dp/{asin}", headers=HEADERS, timeout=30)
+                if r.status_code == 200:
+                    pages[asin] = r.text
+                else:
+                    print(f"[{get_ist_now()}] {asin}: HTTP {r.status_code}")
+            except Exception as e:
+                print(f"[{get_ist_now()}] {asin}: fetch failed: {e}")
+    return pages
+
+
+def _denomination_variant_asins(html: str) -> List[str]:
+    """From a gift-card page's twister map, return the sibling ASINs whose denomination is in
+    DENOMS_WANTED (Rs.5000 / Rs.10000). Each card is a twister family (theme x denomination)
+    and the deals listing surfaces an arbitrary denomination, so we expand to the 5000/10000
+    siblings. Amazon embeds the whole denomination->ASIN map in `dimensionValuesDisplayData`,
+    e.g. {"B0..":["5000","Wedding Envelope"], "B0..":["1000","Wedding Envelope"], ...}."""
+    m = re.search(r'"dimensionValuesDisplayData"\s*:\s*(\{.*?\})\s*,\s*"', html, re.S)
+    if not m:
+        return []
     try:
-        r = _get(f"https://www.amazon.in/dp/{asin}", headers=HEADERS, timeout=30)
-        if r.status_code != 200:
-            print(f"[{get_ist_now()}] {asin}: HTTP {r.status_code}")
-            return None
-    except Exception as e:
-        print(f"[{get_ist_now()}] {asin}: fetch failed: {e}")
-        return None
-    return _parse_gift_card(asin, r.text)
-
-
-def fetch_gift_cards_via_browser(asins: List[str]) -> List[Dict[str, Any]]:
-    """Fetch all ASINs' product pages in ONE Scraping Browser session (residential IP,
-    real browser -> no CAPTCHA). Minimal credits: one session, same-origin GETs."""
-    calls = [{"url": f"https://www.amazon.in/dp/{a}", "method": "GET"} for a in asins]
-    resp = brightdata_browser.browser_fetch("https://www.amazon.in/", calls) or []
+        data = json.loads(m.group(1))
+    except Exception:
+        return []
     out = []
-    for asin, r in zip(asins, resp):
-        if not r or r.get("status") != 200:
-            print(f"[{get_ist_now()}] {asin}: browser HTTP {r.get('status') if r else 'n/a'}")
-            continue
-        info = _parse_gift_card(asin, r.get("text") or "")
-        if info:
-            out.append(info)
+    for asin, labels in data.items():
+        vals = labels if isinstance(labels, list) else [labels]
+        if {re.sub(r"[^0-9]", "", str(v)) for v in vals} & DENOMS_WANTED:
+            out.append(asin)
     return out
 
 
@@ -354,30 +406,42 @@ def check_amazon():
     print(f"Min discount: {MIN_DISCOUNT_PCT}%")
     print("=" * 60)
 
+    # Once a discount is found + alerted, don't scan again for FOUND_COOLDOWN_HOURS (24h).
+    if _found_recently():
+        return False
+
     if _recently_ran():
         return False
 
     use_browser = brightdata_browser.is_configured()
     if use_browser:
-        # Scraping Browser (residential) -- Amazon CAPTCHAs the datacenter IP. Discover the
-        # current gift-card ASINs from the deals listing (one fetch), then verify each via
-        # its product page in a second session. The festival/gifting ASINs that carry the
-        # upfront-discount promo rotate constantly, so the old seed list went stale and the
-        # monitor was watching 4 cards that never discount -- discovery fixes that. Seeds
-        # are only a fallback for when discovery itself fails (captcha / layout change).
+        # Amazon CAPTCHAs the datacenter IP -> discover via the residential Scraping Browser.
         discovered = discover_asins_via_browser(AMAZON_GC_MAX)
-        asins = discovered or ASINS
-        print(f"[{get_ist_now()}] Source: Bright Data Scraping Browser; discovered "
-              f"{len(discovered)} via deals listing; checking {len(asins)} ASIN(s)")
-        _mark_ran()
-        infos = fetch_gift_cards_via_browser(asins)
+        src = "Bright Data Scraping Browser"
     else:
-        # Direct (residential/local): full dynamic discovery.
-        discovered = discover_asins(AMAZON_GC_MAX)
-        asins = list(dict.fromkeys(ASINS + discovered))
-        print(f"[{get_ist_now()}] Source: direct; discovered {len(discovered)} via search; checking {len(asins)} ASIN(s)")
-        _mark_ran()
-        infos = [i for i in (fetch_gift_card(a) for a in asins) if i]
+        discovered = discover_asins(AMAZON_GC_MAX)  # direct (residential/local)
+        src = "direct"
+    # The deals listing returns a different subset per session, so union discovery with the
+    # known Rs.5000 ASINs (known first so they survive the cap) for stable coverage.
+    parents = list(dict.fromkeys(ASINS + discovered))[:AMAZON_GC_MAX]
+    print(f"[{get_ist_now()}] Source: {src}; discovered {len(discovered)}; "
+          f"{len(parents)} parent ASIN(s) ({len(ASINS)} known + discovery)")
+    _mark_ran()
+
+    # Fetch each parent, then expand every family to its Rs.5000/10000 twister siblings (the
+    # listing surfaces an arbitrary denomination, but the arbitrage lives on 5000/10000).
+    pages = _fetch_pages(parents, use_browser)
+    variants = []
+    for html in pages.values():
+        variants += _denomination_variant_asins(html)
+    variants = [a for a in dict.fromkeys(variants) if a not in pages][:AMAZON_GC_MAX]
+    if variants:
+        print(f"[{get_ist_now()}] expanding {len(variants)} Rs.5000/10000 denomination variant(s)")
+        pages.update(_fetch_pages(variants, use_browser))
+
+    infos = [i for i in (_parse_gift_card(a, h) for a, h in pages.items()) if i]
+    # Keep only Rs.5000 / Rs.10000 face-value cards (mrp == face value even at 0% off).
+    infos = [i for i in infos if int(round(i["mrp"])) in (5000, 10000)]
 
     matches = []
     for info in infos:

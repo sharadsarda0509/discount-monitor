@@ -64,7 +64,11 @@ jobs:
           RECEIVER_EMAIL: ${{ secrets.RECEIVER_EMAIL }}
           EMAIL_PASSWORD: ${{ secrets.EMAIL_PASSWORD }}
           NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
-          ALERT_COOLDOWN_HOURS: "12"
+          # Amazon physical gift card: 24h cool-off. Once a discount is found it also skips
+          # scanning entirely for 24h (AMAZON_FOUND_COOLDOWN_HOURS) -- no repeat alerts, no
+          # Bright Data credits spent re-checking the same live deal.
+          ALERT_COOLDOWN_HOURS: "24"
+          AMAZON_FOUND_COOLDOWN_HOURS: "24"
           AMAZON_MIN_DISCOUNT: "2.0"
           # Amazon CAPTCHAs the datacenter IP, so on CI this runs through the Scraping
           # Browser (residential): it discovers the current gift-card ASINs from the deals
@@ -250,7 +254,7 @@ jobs:
           NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
           CROMA_PINCODE: "560035,560048"
           CROMA_MODELS: "15,16,17"
-          CROMA_COOLDOWN_HOURS: "0.5"
+          CROMA_COOLDOWN_HOURS: "0.0333"  # 2 minutes
         run: |
           python check_croma_iphone.py
         continue-on-error: true
