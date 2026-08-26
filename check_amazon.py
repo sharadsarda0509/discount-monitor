@@ -57,16 +57,26 @@ NTFY_TOPIC = os.environ.get('NTFY_TOPIC', '')
 
 MIN_DISCOUNT_PCT = float(os.environ.get("AMAZON_MIN_DISCOUNT", 2.0))
 
-# Seed / fallback fixed-denomination Amazon Pay Physical Gift Card ASINs (one per
-# denomination) -- always checked, and used if dynamic discovery returns nothing.
-# The "Black Box" family (Rs.1000/2000/3000/10000). Override via AMAZON_GC_ASINS.
-_DEFAULT_ASINS = "B00PQ6Z02G,B00PQ6ZEC2,B00PQ6ZMGK,B00PQ70336"
+# Fallback fixed-denomination Amazon Pay gift-card ASINs, used when dynamic discovery
+# returns nothing (Amazon served the JS-shell search variant / a captcha). These are the
+# current physical + digital gifting cards surfaced by the deals listing; refresh them if
+# Amazon rotates the festival ASINs again. Override via AMAZON_GC_ASINS.
+_DEFAULT_ASINS = ("B0DTJ2Q579,B0DB61H2KX,B0B838CT1X,B0CCSJPV6T,"
+                  "B0H5WGYP74,B0H5WRQ52J,B0H5WT5LDV")
 ASINS = [a.strip() for a in os.environ.get("AMAZON_GC_ASINS", _DEFAULT_ASINS).split(",") if a.strip()]
 
-# Dynamic discovery: pull gift-card ASINs from search each run, then verify each via its
-# product page (free-amount cards render no static price and are skipped automatically).
-SEARCH_URL = "https://www.amazon.in/s?k=amazon+pay+physical+gift+card"
-# Cap discovered ASINs to keep Amazon request volume (and bot-block risk) sane.
+# Dynamic discovery: pull gift-card ASINs from the deals listing each run, then verify each
+# via its product page (free-amount cards render no static price and are skipped). Default
+# source is the gift-cards "deals" listing filtered to the Amazon Pay brand -- exactly where
+# upfront-discount cards surface (node 3704982031 = gift cards, p_123=414939 = Amazon Pay,
+# p_n_deal_type=26921226031 = deals). Festival/gifting ASINs rotate constantly, so a static
+# seed list goes stale within weeks; discovery keeps coverage current. Override via env.
+SEARCH_URL = os.environ.get(
+    "AMAZON_GC_SEARCH_URL",
+    "https://www.amazon.in/s?i=gift-cards&rh=n%3A3704982031%2C"
+    "p_n_deal_type%3A26921226031%2Cp_123%3A414939",
+)
+# Cap discovered ASINs to keep Amazon request volume (and browser cost) sane.
 AMAZON_GC_MAX = int(os.environ.get("AMAZON_GC_MAX", 25))
 # Only run the (multi-fetch) scan at most once per this many minutes. The workflow fires
 # every 5 min; scanning ~25 product pages that often would get the IP bot-flagged.
@@ -154,19 +164,11 @@ def _mark_ran():
     STATE_FILE.write_text(json.dumps(state, indent=2))
 
 
-def discover_asins(max_n: int) -> List[str]:
-    """Discover Amazon Pay physical gift-card ASINs from the search page (cookieless)."""
-    if BeautifulSoup is None:
+def _extract_gc_asins(html: str, max_n: int) -> List[str]:
+    """Pull Amazon Pay gift-card ASINs out of a search-results page's HTML."""
+    if BeautifulSoup is None or not html:
         return []
-    try:
-        r = _get(SEARCH_URL, headers=HEADERS, timeout=30)
-        if r.status_code != 200 or "validateCaptcha" in r.text:
-            print(f"[{get_ist_now()}] discovery: HTTP {r.status_code} (or captcha)")
-            return []
-        soup = BeautifulSoup(r.text, "html.parser")
-    except Exception as e:
-        print(f"[{get_ist_now()}] discovery failed: {e}")
-        return []
+    soup = BeautifulSoup(html, "html.parser")
     found: List[str] = []
     for div in soup.find_all("div", {"data-component-type": "s-search-result"}):
         asin = div.get("data-asin", "")
@@ -179,6 +181,41 @@ def discover_asins(max_n: int) -> List[str]:
         if len(found) >= max_n:
             break
     return found
+
+
+def discover_asins(max_n: int) -> List[str]:
+    """Discover gift-card ASINs from the deals listing via a direct (cookieless) request."""
+    try:
+        r = _get(SEARCH_URL, headers=HEADERS, timeout=30)
+        if r.status_code != 200 or "validateCaptcha" in r.text:
+            print(f"[{get_ist_now()}] discovery: HTTP {r.status_code} (or captcha)")
+            return []
+    except Exception as e:
+        print(f"[{get_ist_now()}] discovery failed: {e}")
+        return []
+    return _extract_gc_asins(r.text, max_n)
+
+
+def discover_asins_via_browser(max_n: int, attempts: int = 4) -> List[str]:
+    """Discover gift-card ASINs from the deals listing through the Scraping Browser.
+    Amazon CAPTCHAs the datacenter IP, so on CI discovery must go through the residential
+    browser too (a direct request there returns a CAPTCHA page and finds nothing).
+
+    Amazon serves the search page as a client-rendered JS shell (no server-rendered results)
+    for a subset of sessions, and this is fixed for the whole session/IP -- so retrying
+    within one session is useless. Each browser_fetch() opens a fresh session (a new
+    residential IP), so we retry across sessions and take the first that returns results."""
+    for i in range(max(1, attempts)):
+        resp = brightdata_browser.browser_fetch(
+            "https://www.amazon.in/", [{"url": SEARCH_URL, "method": "GET"}]) or []
+        first = resp[0] if resp else None
+        if first and first.get("status") == 200:
+            asins = _extract_gc_asins(first.get("text") or "", max_n)
+            if asins:
+                return asins
+        print(f"[{get_ist_now()}] browser discovery attempt {i + 1}/{attempts}: "
+              f"HTTP {first.get('status') if first else 'n/a'}, no results")
+    return []
 
 
 def _num(text: Optional[str]) -> Optional[float]:
@@ -322,11 +359,16 @@ def check_amazon():
 
     use_browser = brightdata_browser.is_configured()
     if use_browser:
-        # Scraping Browser (residential) -- Amazon CAPTCHAs the datacenter IP. To keep
-        # credits minimal, check only the seed ASINs (they carry the blanket promo) in
-        # one browser session; skip search discovery (would add ~25 heavy fetches).
-        asins = ASINS
-        print(f"[{get_ist_now()}] Source: Bright Data Scraping Browser; checking {len(asins)} seed ASIN(s)")
+        # Scraping Browser (residential) -- Amazon CAPTCHAs the datacenter IP. Discover the
+        # current gift-card ASINs from the deals listing (one fetch), then verify each via
+        # its product page in a second session. The festival/gifting ASINs that carry the
+        # upfront-discount promo rotate constantly, so the old seed list went stale and the
+        # monitor was watching 4 cards that never discount -- discovery fixes that. Seeds
+        # are only a fallback for when discovery itself fails (captcha / layout change).
+        discovered = discover_asins_via_browser(AMAZON_GC_MAX)
+        asins = discovered or ASINS
+        print(f"[{get_ist_now()}] Source: Bright Data Scraping Browser; discovered "
+              f"{len(discovered)} via deals listing; checking {len(asins)} ASIN(s)")
         _mark_ran()
         infos = fetch_gift_cards_via_browser(asins)
     else:

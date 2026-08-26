@@ -67,9 +67,10 @@ jobs:
           ALERT_COOLDOWN_HOURS: "12"
           AMAZON_MIN_DISCOUNT: "2.0"
           # Amazon CAPTCHAs the datacenter IP, so on CI this runs through the Scraping
-          # Browser (residential): it checks only the seed ASINs in ONE session, throttled
-          # to once/120 min to conserve credits. Lower to 60/30 if your 3 WSS secrets are
-          # separate Bright Data accounts (more budget). (Direct/local mode does discovery.)
+          # Browser (residential): it discovers the current gift-card ASINs from the deals
+          # listing (festival ASINs rotate, so a static seed list goes stale), then verifies
+          # each via its product page. Throttled to once/120 min to conserve credits. Lower
+          # to 60/30 if your 3 WSS secrets are separate Bright Data accounts (more budget).
           BRIGHTDATA_BROWSER_WSS: ${{ secrets.BRIGHTDATA_BROWSER_WSS }}
           BRIGHTDATA_BROWSER_WSS_2: ${{ secrets.BRIGHTDATA_BROWSER_WSS_2 }}
           BRIGHTDATA_BROWSER_WSS_3: ${{ secrets.BRIGHTDATA_BROWSER_WSS_3 }}
