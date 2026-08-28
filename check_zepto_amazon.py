@@ -49,6 +49,9 @@ STATE_DIR = Path(".alert_state")
 STATE_FILE = STATE_DIR / "last_alert.json"
 NTFY_TOPIC = os.environ.get("NTFY_TOPIC", "")
 MIN_DISCOUNT_PCT = float(os.environ.get("ZEPTO_MIN_DISCOUNT", 1.0))
+# Only alert on cards whose denomination (₹ face value = MRP) is at least this.
+# 0 = no floor. Set to e.g. 5000 to ignore small denominations (₹500/1100/2100/3100).
+MIN_DENOMINATION = float(os.environ.get("ZEPTO_MIN_DENOMINATION", 0))
 
 SEARCH_URL = "https://www.zepto.com/search?query=amazon+pay+gift+card"
 API_BASE = "https://bff-gateway.zepto.com"
@@ -88,6 +91,17 @@ def should_send_alert(alert_type: str) -> bool:
     except Exception as e:
         print(f"[{get_ist_now()}] Warning reading state: {e}")
         return True
+
+
+def _card_key(match: Dict[str, Any]) -> str:
+    """Per-card alert key so each denomination/design cools off independently.
+
+    The always-in-stock low denominations (₹500/1100/2100/3100…) otherwise consume the
+    single global cooldown on every scrape, starving the rare, small-stock ₹10,000 card
+    of an alert. Keying by product name lets a freshly-in-stock ₹10,000 alert on its own
+    even when a ₹2,100 already alerted within the cooldown window.
+    """
+    return f"zepto_amazon::{match['name']}"
 
 
 def record_alert(alert_type: str):
@@ -330,7 +344,7 @@ def check_zepto_amazon():
     use_browser = brightdata_browser.is_configured()
     print("=" * 60)
     print(f"Zepto Amazon Pay Gift Card Monitor -- {get_ist_now()}")
-    print(f"Min discount: {MIN_DISCOUNT_PCT}%  |  Store: 560035   "
+    print(f"Min discount: {MIN_DISCOUNT_PCT}%  |  Min denom: >=Rs.{MIN_DENOMINATION:.0f}  |  Store: 560035   "
           f"Source: {'Bright Data Scraping Browser' if use_browser else 'direct'}")
     print("=" * 60)
 
@@ -360,22 +374,32 @@ def check_zepto_amazon():
             f"[{get_ist_now()}] {p['name'][:50]:50s}  {status:12s}  "
             f"Rs.{p['selling_price']:6d}  {disc}"
         )
-        if p["in_stock"] and p["discount_pct"] >= MIN_DISCOUNT_PCT:
+        if (p["in_stock"] and p["discount_pct"] >= MIN_DISCOUNT_PCT
+                and p["mrp"] >= MIN_DENOMINATION):
             matches.append(p)
 
     if not matches:
-        print(f"[{get_ist_now()}] No Amazon Pay gift cards with >={MIN_DISCOUNT_PCT}% discount.")
+        print(f"[{get_ist_now()}] No Amazon Pay gift cards with >={MIN_DISCOUNT_PCT}% discount "
+              f"and denomination >=Rs.{MIN_DENOMINATION:.0f}.")
         return False
 
     print(f"[{get_ist_now()}] MATCH: {[m['name'] for m in matches]}")
 
-    if not should_send_alert("zepto_amazon"):
+    # Per-card cooldown: only alert on cards not already alerted within the cooldown
+    # window. Keeps the ~daily digest cadence for the always-in-stock low denominations
+    # while letting a freshly-in-stock ₹10,000 (or any newly-appearing card) alert
+    # immediately instead of being swallowed by a single global cooldown.
+    new_matches = [m for m in matches if should_send_alert(_card_key(m))]
+    if not new_matches:
+        print(f"[{get_ist_now()}] All matching cards already alerted within cooldown.")
         return False
 
-    ntfy_ok = send_ntfy_alert(matches)
-    email_ok = send_email_alert(matches)
+    print(f"[{get_ist_now()}] NEW: {[m['name'] for m in new_matches]}")
+    ntfy_ok = send_ntfy_alert(new_matches)
+    email_ok = send_email_alert(new_matches)
     if ntfy_ok or email_ok:
-        record_alert("zepto_amazon")
+        for m in new_matches:
+            record_alert(_card_key(m))
     return ntfy_ok or email_ok
 
 

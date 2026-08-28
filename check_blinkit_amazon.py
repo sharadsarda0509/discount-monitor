@@ -49,6 +49,9 @@ RUN_INTERVAL_MIN = float(os.environ.get("BLINKIT_AMAZON_RUN_INTERVAL_MIN", 0))
 # Only alert when the card is actually DISCOUNTED (selling price < MRP) by at least this %.
 # In-stock-at-face-value is not interesting. 0.5 = any real discount.
 MIN_DISCOUNT_PCT = float(os.environ.get("BLINKIT_AMAZON_MIN_DISCOUNT", 0.5))
+# Only alert on cards whose denomination (₹ face value = MRP) is at least this.
+# 0 = no floor. Set to e.g. 5000 to ignore small denominations.
+MIN_DENOMINATION = float(os.environ.get("BLINKIT_AMAZON_MIN_DENOMINATION", 0))
 STATE_DIR = Path(".alert_state")
 STATE_FILE = STATE_DIR / "last_alert.json"
 
@@ -226,6 +229,7 @@ def parse_products(snippets: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
             "inventory": inventory,
             "is_sold_out": is_sold_out,
             "product_state": product_state,
+            "mrp": mrp,
             "mrp_text": mrp_text,
             "price_text": price_text,
             "discount_pct": discount_pct,
@@ -328,11 +332,13 @@ def check_blinkit_amazon():
             f"[{get_ist_now()}] {p['name']:40s}  {status:12s}  "
             f"{p['price_text']} (MRP {p['mrp_text']})  {disc}  inv={p['inventory']}"
         )
-        if p["in_stock"] and p["discount_pct"] >= MIN_DISCOUNT_PCT:
+        if (p["in_stock"] and p["discount_pct"] >= MIN_DISCOUNT_PCT
+                and (p["mrp"] or 0) >= MIN_DENOMINATION):
             discounted.append(p)
 
     if not discounted:
-        print(f"[{get_ist_now()}] No in-stock Amazon Pay gift card with >={MIN_DISCOUNT_PCT}% discount.")
+        print(f"[{get_ist_now()}] No in-stock Amazon Pay gift card with >={MIN_DISCOUNT_PCT}% discount "
+              f"and denomination >=Rs.{MIN_DENOMINATION:.0f}.")
         return False
 
     print(f"[{get_ist_now()}] DISCOUNTED: {[(p['name'], p['discount_pct']) for p in discounted]}")

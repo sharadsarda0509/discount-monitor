@@ -29,6 +29,7 @@ jobs:
       BRIGHTDATA_BROWSER_WSS_5: ${{ secrets.BRIGHTDATA_BROWSER_WSS_5 }}
       BRIGHTDATA_BROWSER_WSS_6: ${{ secrets.BRIGHTDATA_BROWSER_WSS_6 }}
       BRIGHTDATA_BROWSER_WSS_7: ${{ secrets.BRIGHTDATA_BROWSER_WSS_7 }}
+      BRIGHTDATA_BROWSER_WSS_8: ${{ secrets.BRIGHTDATA_BROWSER_WSS_8 }}
 
     steps:
       - name: Checkout repository
@@ -228,6 +229,7 @@ jobs:
           ALERT_COOLDOWN_HOURS: "24"
           BLINKIT_LAT: ${{ secrets.BLINKIT_LAT }}
           BLINKIT_LON: ${{ secrets.BLINKIT_LON }}
+          BLINKIT_AMAZON_MIN_DENOMINATION: "5000"  # only big cards (>=Rs.5000)
           # Blinkit 403s the datacenter IP -> route through the Scraping Browser,
           # throttled to once/120 min to conserve credits.
           BLINKIT_AMAZON_RUN_INTERVAL_MIN: "120"
@@ -325,6 +327,7 @@ jobs:
           NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
           ALERT_COOLDOWN_HOURS: "24"
           ZEPTO_MIN_DISCOUNT: "1.0"
+          ZEPTO_MIN_DENOMINATION: "5000"  # only big cards (>=Rs.5000, e.g. Rs.10000)
           # Zepto's BFF sits behind an AWS-WAF JS challenge that blocks bare API clients
           # -> route through the Bright Data Scraping Browser (real Chrome, residential IP).
           ZEPTO_RUN_INTERVAL_MIN: "120"
