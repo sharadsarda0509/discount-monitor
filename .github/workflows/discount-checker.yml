@@ -113,7 +113,9 @@ jobs:
           RECEIVER_EMAIL: ${{ secrets.RECEIVER_EMAIL }}
           EMAIL_PASSWORD: ${{ secrets.EMAIL_PASSWORD }}
           NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
-          ALERT_COOLDOWN_HOURS: "12"
+          # 24h cooldown, keyed per-ASIN (see check_amazon_iphone.py) so each handset alerts
+          # at most once/day and one model's alert never silences the others.
+          AMAZON_IPHONE_COOLDOWN_HOURS: "24"
           AMAZON_IPHONE_MODELS: "15,16,17"
           # Delivery pincode: Prime badge + delivery promise are location-specific. Only alert
           # when Amazon commits a delivery promise here (real stock), not a ghost "Only N left".

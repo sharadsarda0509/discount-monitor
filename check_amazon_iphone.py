@@ -64,11 +64,12 @@ NTFY_TOPIC = os.environ.get("NTFY_TOPIC", "")
 MODELS = [m.strip() for m in os.environ.get("AMAZON_IPHONE_MODELS", "15,16,17").split(",") if m.strip()]
 
 # Base-handset ASINs always checked (unioned with discovery) so a known model is covered even
-# when the listing omits it that session -- the deals search is high-variance and often ranks
-# Pro/Air/sponsored above the base handsets. Seeded with the base iPhone 16 128GB listings
-# (base 15/17 aren't currently sold as base on Amazon.in). Refresh when Amazon rotates these;
+# when the listing omits it that session -- the deals search is high-variance, often ranks
+# Pro/Air/sponsored above the base handsets, and sometimes returns a JS shell with no results.
+# Seeded with base iPhone 16 128GB + iPhone 17 256GB/512GB so 17 is checked on every scan
+# instead of only when discovery happens to surface it. Refresh when Amazon rotates these;
 # override via AMAZON_IPHONE_ASINS.
-_DEFAULT_ASINS = "B0DGJ7TGDR,B0DGHZWBYB"
+_DEFAULT_ASINS = "B0DGJ7TGDR,B0DGHZWBYB,B0FQFYXCC4,B0FQFJ87HN,B0FQFLYV1S"
 ASINS = [a.strip() for a in os.environ.get("AMAZON_IPHONE_ASINS", _DEFAULT_ASINS).split(",") if a.strip()]
 
 # Search listing per model -- exactly where base handsets surface. Override the whole list
@@ -535,12 +536,18 @@ def check_amazon_iphone():
         return False
 
     print(f"[{get_ist_now()}] IN STOCK: {[p['asin'] for p in in_stock]}")
-    if not should_send_alert("amazon_iphone"):
+    # Per-ASIN cooldown so a freshly-in-stock model/variant alerts on its own. A single global
+    # key let one iPhone's alert silence every other model for the whole cooldown window (e.g.
+    # an in-stock iPhone 17 starved while a 16 sat inside the 12h window).
+    new = [p for p in in_stock if should_send_alert(f"amazon_iphone::{p['asin']}")]
+    if not new:
+        print(f"[{get_ist_now()}] All in-stock handsets already alerted within cooldown.")
         return False
 
-    ok = send_alert(in_stock)
+    ok = send_alert(new)
     if ok:
-        record_alert("amazon_iphone")
+        for p in new:
+            record_alert(f"amazon_iphone::{p['asin']}")
     return ok
 
 
