@@ -57,6 +57,9 @@ async (calls) => {
 # Statuses that mean an interstitial bot challenge (e.g. AWS WAF) hasn't cleared yet:
 # 0 = the fetch threw (a cross-origin challenge response fails CORS), 202 = WAF challenge.
 _CHALLENGE_STATUSES = {0, 202}
+# When a challenge stays uncleared, fail over to at most this many endpoints (fresh IPs)
+# before giving up -- caps the Scraping Browser credit cost of a persistently-blocked target.
+_CHALLENGE_FAILOVER_MAX = int(os.environ.get("BRIGHTDATA_CHALLENGE_FAILOVER_MAX", 3))
 
 
 def _wss_urls() -> List[str]:
@@ -140,13 +143,30 @@ def browser_fetch(origin: str, calls: List[Dict[str, Any]],
         return None
     random.shuffle(urls)  # spread load; also randomises failover order
     last_err = None
+    last_result = None
+    challenge_tries = 0
     for wss in urls:
+        zone = wss.split("zone-", 1)[-1].split(":", 1)[0] if "zone-" in wss else "?"
         try:
-            return _run_once(wss, origin, calls, timeout_ms, settle_ms, wait_cookie)
+            result = _run_once(wss, origin, calls, timeout_ms, settle_ms, wait_cookie)
         except Exception as e:  # connection/navigation failure -> try the next endpoint
             last_err = e
-            zone = wss.split("zone-", 1)[-1].split(":", 1)[0] if "zone-" in wss else "?"
             print(f"[brightdata_browser] endpoint (zone {zone}) failed: {e}")
+            continue
+        # A bot challenge (e.g. AWS WAF) that a caller waited on can stay uncleared on this
+        # residential IP even after the in-session retries. A different endpoint = a fresh IP
+        # = a fresh, often easier challenge, so fail over (bounded, to cap credit cost).
+        if wait_cookie and any(r.get("status") in _CHALLENGE_STATUSES for r in result):
+            last_result = result
+            challenge_tries += 1
+            print(f"[brightdata_browser] endpoint (zone {zone}): challenge not cleared "
+                  f"(status 0/202) on attempt {challenge_tries}/{_CHALLENGE_FAILOVER_MAX}")
+            if challenge_tries >= _CHALLENGE_FAILOVER_MAX:
+                break
+            continue
+        return result
+    if last_result is not None:
+        return last_result  # every tried IP left the challenge uncleared -> return it to log
     if last_err:
         print(f"[brightdata_browser] all endpoints failed: {last_err}")
     return None

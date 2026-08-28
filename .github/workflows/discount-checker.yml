@@ -16,7 +16,20 @@ concurrency:
 jobs:
   check-discount:
     runs-on: ubuntu-latest
-    
+
+    # Bright Data Scraping Browser endpoints, set once for the whole job so every monitor
+    # that needs them inherits the pool. Adding another endpoint later is a one-line change
+    # here (plus the matching GitHub secret) -- no per-step edits. Only the monitors that
+    # import brightdata_browser use them; the rest harmlessly ignore these vars.
+    env:
+      BRIGHTDATA_BROWSER_WSS: ${{ secrets.BRIGHTDATA_BROWSER_WSS }}
+      BRIGHTDATA_BROWSER_WSS_2: ${{ secrets.BRIGHTDATA_BROWSER_WSS_2 }}
+      BRIGHTDATA_BROWSER_WSS_3: ${{ secrets.BRIGHTDATA_BROWSER_WSS_3 }}
+      BRIGHTDATA_BROWSER_WSS_4: ${{ secrets.BRIGHTDATA_BROWSER_WSS_4 }}
+      BRIGHTDATA_BROWSER_WSS_5: ${{ secrets.BRIGHTDATA_BROWSER_WSS_5 }}
+      BRIGHTDATA_BROWSER_WSS_6: ${{ secrets.BRIGHTDATA_BROWSER_WSS_6 }}
+      BRIGHTDATA_BROWSER_WSS_7: ${{ secrets.BRIGHTDATA_BROWSER_WSS_7 }}
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -83,12 +96,6 @@ jobs:
           # listing (festival ASINs rotate, so a static seed list goes stale), then verifies
           # each via its product page. Throttled to once/120 min to conserve credits. Lower
           # to 60/30 if your 3 WSS secrets are separate Bright Data accounts (more budget).
-          BRIGHTDATA_BROWSER_WSS: ${{ secrets.BRIGHTDATA_BROWSER_WSS }}
-          BRIGHTDATA_BROWSER_WSS_2: ${{ secrets.BRIGHTDATA_BROWSER_WSS_2 }}
-          BRIGHTDATA_BROWSER_WSS_3: ${{ secrets.BRIGHTDATA_BROWSER_WSS_3 }}
-          BRIGHTDATA_BROWSER_WSS_4: ${{ secrets.BRIGHTDATA_BROWSER_WSS_4 }}
-          BRIGHTDATA_BROWSER_WSS_5: ${{ secrets.BRIGHTDATA_BROWSER_WSS_5 }}
-          BRIGHTDATA_BROWSER_WSS_6: ${{ secrets.BRIGHTDATA_BROWSER_WSS_6 }}
           AMAZON_GC_MAX: "25"
           # Scan every 30 min (max ~30-min detection lag), but only run the expensive dynamic
           # discovery every 4h -- the cheap scans in between reuse the last discovered set +
@@ -114,12 +121,6 @@ jobs:
           # Browser (residential): it discovers base-handset ASINs from the search listing
           # (unioned with the always-checked seed ASINs, since the search is high-variance
           # and often outranks the base models), then reads each product page's availability.
-          BRIGHTDATA_BROWSER_WSS: ${{ secrets.BRIGHTDATA_BROWSER_WSS }}
-          BRIGHTDATA_BROWSER_WSS_2: ${{ secrets.BRIGHTDATA_BROWSER_WSS_2 }}
-          BRIGHTDATA_BROWSER_WSS_3: ${{ secrets.BRIGHTDATA_BROWSER_WSS_3 }}
-          BRIGHTDATA_BROWSER_WSS_4: ${{ secrets.BRIGHTDATA_BROWSER_WSS_4 }}
-          BRIGHTDATA_BROWSER_WSS_5: ${{ secrets.BRIGHTDATA_BROWSER_WSS_5 }}
-          BRIGHTDATA_BROWSER_WSS_6: ${{ secrets.BRIGHTDATA_BROWSER_WSS_6 }}
           AMAZON_IPHONE_MAX: "25"
           # Scan every 30 min; run the (extra) discovery listing session only every 4h -- the
           # cheap scans in between reuse the last discovered set + seed ASINs.
@@ -229,12 +230,6 @@ jobs:
           BLINKIT_LON: ${{ secrets.BLINKIT_LON }}
           # Blinkit 403s the datacenter IP -> route through the Scraping Browser,
           # throttled to once/120 min to conserve credits.
-          BRIGHTDATA_BROWSER_WSS: ${{ secrets.BRIGHTDATA_BROWSER_WSS }}
-          BRIGHTDATA_BROWSER_WSS_2: ${{ secrets.BRIGHTDATA_BROWSER_WSS_2 }}
-          BRIGHTDATA_BROWSER_WSS_3: ${{ secrets.BRIGHTDATA_BROWSER_WSS_3 }}
-          BRIGHTDATA_BROWSER_WSS_4: ${{ secrets.BRIGHTDATA_BROWSER_WSS_4 }}
-          BRIGHTDATA_BROWSER_WSS_5: ${{ secrets.BRIGHTDATA_BROWSER_WSS_5 }}
-          BRIGHTDATA_BROWSER_WSS_6: ${{ secrets.BRIGHTDATA_BROWSER_WSS_6 }}
           BLINKIT_AMAZON_RUN_INTERVAL_MIN: "120"
         run: |
           python check_blinkit_amazon.py
@@ -266,14 +261,8 @@ jobs:
           # Bright Data Scraping Browser (CDP/wss endpoint) -- required: Blinkit's iPhone
           # search returns 403 to datacenter IPs and to bare API clients, but 200 from a
           # real browser session. When unset, the script falls back to a direct request.
-          BRIGHTDATA_BROWSER_WSS: ${{ secrets.BRIGHTDATA_BROWSER_WSS }}
           # Optional additional Scraping Browser endpoints -- rotated per run to spread
           # credit/rate load (and multiply the free budget if they're separate accounts).
-          BRIGHTDATA_BROWSER_WSS_2: ${{ secrets.BRIGHTDATA_BROWSER_WSS_2 }}
-          BRIGHTDATA_BROWSER_WSS_3: ${{ secrets.BRIGHTDATA_BROWSER_WSS_3 }}
-          BRIGHTDATA_BROWSER_WSS_4: ${{ secrets.BRIGHTDATA_BROWSER_WSS_4 }}
-          BRIGHTDATA_BROWSER_WSS_5: ${{ secrets.BRIGHTDATA_BROWSER_WSS_5 }}
-          BRIGHTDATA_BROWSER_WSS_6: ${{ secrets.BRIGHTDATA_BROWSER_WSS_6 }}
           # Only actually hit the browser at most once per this many minutes (the workflow
           # fires every 5 min); throttled to conserve the limited Scraping Browser credits.
           # 120 = every 2h (safe on a single 5,000-credit account). Lower to 60 if you have
@@ -338,12 +327,6 @@ jobs:
           ZEPTO_MIN_DISCOUNT: "1.0"
           # Zepto's BFF sits behind an AWS-WAF JS challenge that blocks bare API clients
           # -> route through the Bright Data Scraping Browser (real Chrome, residential IP).
-          BRIGHTDATA_BROWSER_WSS: ${{ secrets.BRIGHTDATA_BROWSER_WSS }}
-          BRIGHTDATA_BROWSER_WSS_2: ${{ secrets.BRIGHTDATA_BROWSER_WSS_2 }}
-          BRIGHTDATA_BROWSER_WSS_3: ${{ secrets.BRIGHTDATA_BROWSER_WSS_3 }}
-          BRIGHTDATA_BROWSER_WSS_4: ${{ secrets.BRIGHTDATA_BROWSER_WSS_4 }}
-          BRIGHTDATA_BROWSER_WSS_5: ${{ secrets.BRIGHTDATA_BROWSER_WSS_5 }}
-          BRIGHTDATA_BROWSER_WSS_6: ${{ secrets.BRIGHTDATA_BROWSER_WSS_6 }}
           ZEPTO_RUN_INTERVAL_MIN: "120"
         run: |
           python check_zepto_amazon.py
