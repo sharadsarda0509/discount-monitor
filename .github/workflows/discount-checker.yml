@@ -327,7 +327,10 @@ jobs:
           NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
           ALERT_COOLDOWN_HOURS: "24"
           ZEPTO_MIN_DISCOUNT: "1.0"
-          ZEPTO_MIN_DENOMINATION: "5000"  # only big cards (>=Rs.5000, e.g. Rs.10000)
+          # No denomination floor for Zepto: the higher denominations (>=Rs.5000) are hidden
+          # from the anonymous Bright Data session by Zepto's anti-bot gating, so alert on ANY
+          # discounted Amazon Pay card. (Per-card cooldown still prevents repeat spam.)
+          ZEPTO_MIN_DENOMINATION: "0"
           # Zepto's BFF sits behind an AWS-WAF JS challenge that blocks bare API clients
           # -> route through the Bright Data Scraping Browser (real Chrome, residential IP).
           ZEPTO_RUN_INTERVAL_MIN: "120"
