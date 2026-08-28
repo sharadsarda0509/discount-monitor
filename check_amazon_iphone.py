@@ -89,6 +89,23 @@ PINCODE = os.environ.get("AMAZON_IPHONE_PINCODE", "560035")
 # and are gone by checkout. Set AMAZON_IPHONE_REQUIRE_PRIME=false to alert on any in-stock offer.
 REQUIRE_PRIME = os.environ.get("AMAZON_IPHONE_REQUIRE_PRIME", "true").strip().lower() not in ("0", "false", "no")
 
+# Per-model storage allow-list (GB): only alert on these storages for the given model; a model
+# not listed alerts on any storage. Default: iPhone 17 -> 256 GB only (skip 512 GB / 1 TB).
+# Override via AMAZON_IPHONE_STORAGE="17:256,17:128;16:128" (model:gb, comma/semicolon-separated).
+def _parse_storage_cfg(raw: str) -> Dict[str, set]:
+    cfg: Dict[str, set] = {}
+    for part in re.split(r"[;,]", raw or ""):
+        part = part.strip()
+        if ":" not in part:
+            continue
+        model, gb = (p.strip() for p in part.split(":", 1))
+        if model and gb.isdigit():
+            cfg.setdefault(model, set()).add(int(gb))
+    return cfg
+
+
+STORAGE_ALLOWED = _parse_storage_cfg(os.environ.get("AMAZON_IPHONE_STORAGE", "17:256"))
+
 # Cap discovered ASINs to keep Amazon request volume (and browser cost) sane.
 AMAZON_MAX = int(os.environ.get("AMAZON_IPHONE_MAX", 25))
 # Only run the (multi-fetch) scan at most once per this many minutes. 0 = every trigger.
@@ -218,6 +235,25 @@ def _clean_title(t: str) -> str:
     carries the model + storage and is what we match on. Also drops a 'Sponsored Ad -' prefix."""
     t = re.sub(r"^\s*Sponsored Ad\s*-\s*", "", t or "", flags=re.I)
     return re.split(r"[:;|]", t, 1)[0].strip()
+
+
+_STORAGE_RE = re.compile(r"(\d+)\s*(GB|TB)\b", re.I)
+
+
+def _title_storage_gb(title: str) -> Optional[int]:
+    m = _STORAGE_RE.search(title or "")
+    if not m:
+        return None
+    return int(m.group(1)) * (1024 if m.group(2).lower() == "tb" else 1)
+
+
+def _storage_allowed(title: str) -> bool:
+    """False only when the title's model has a storage allow-list and its storage isn't in it."""
+    mm = re.search(r"i[pP]hone\s*(\d{1,2})", title or "")
+    allowed = STORAGE_ALLOWED.get(mm.group(1)) if mm else None
+    if not allowed:
+        return True
+    return _title_storage_gb(title) in allowed
 
 
 def _card_title(div) -> str:
@@ -514,24 +550,32 @@ def check_amazon_iphone():
 
     in_stock = []
     for info in infos:
+        info["storage_ok"] = _storage_allowed(info["title"])
         status = "IN STOCK" if info["in_stock"] else "out of stock"
         price = f"Rs.{int(info['price'])}" if info.get("price") else "price n/a"
         deliv = (info.get("delivery") or ("promised" if info["deliverable"] else "no-promise"))
+        eligible = info["in_stock"] and (info["deliverable"] or not REQUIRE_PRIME)
+        note = "  [skip: storage]" if eligible and not info["storage_ok"] else ""
         print(f"[{get_ist_now()}] {info['asin']}  {status:12s}  {price:12s}  "
               f"{info['availability'][:18]:18.18}  prime={'Y' if info['prime'] else 'N'}  "
-              f"deliver:{deliv[:16]:16.16}  {info['title'][:30]}")
+              f"deliver:{deliv[:16]:16.16}  {info['title'][:30]}{note}")
         # Only alert when Amazon commits a delivery promise (Prime/deliverable) unless
-        # REQUIRE_PRIME is off -- a bare 'Only N left' with no promise oversells and is gone
-        # by checkout (the false alert this guards against).
-        if info["in_stock"] and (info["deliverable"] or not REQUIRE_PRIME):
+        # REQUIRE_PRIME is off -- a bare 'Only N left' with no promise oversells and is gone by
+        # checkout -- and the storage passes the per-model allow-list (AMAZON_IPHONE_STORAGE).
+        if eligible and info["storage_ok"]:
             in_stock.append(info)
 
     if not in_stock:
         gated = [i for i in infos if i["in_stock"] and not i["deliverable"]]
+        filtered = [i for i in infos
+                    if i["in_stock"] and (i["deliverable"] or not REQUIRE_PRIME) and not i["storage_ok"]]
+        if filtered:
+            print(f"[{get_ist_now()}] {len(filtered)} in stock but excluded by "
+                  f"AMAZON_IPHONE_STORAGE -- not alerting.")
         if REQUIRE_PRIME and gated:
             print(f"[{get_ist_now()}] {len(gated)} in stock but no Prime delivery promise to "
                   f"{PINCODE} -- not alerting. Set AMAZON_IPHONE_REQUIRE_PRIME=false to include.")
-        else:
+        elif not filtered:
             print(f"[{get_ist_now()}] No base iPhone handsets in stock.")
         return False
 
