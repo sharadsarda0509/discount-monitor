@@ -77,6 +77,17 @@ _SEARCH_TMPL = os.environ.get("AMAZON_IPHONE_SEARCH_TMPL", "https://www.amazon.i
 _SEARCH_URLS = [u.strip() for u in os.environ.get("AMAZON_IPHONE_SEARCH_URLS", "").split(";") if u.strip()] \
     or [_SEARCH_TMPL.format(m=m) for m in MODELS]
 
+# Delivery pincode. Prime eligibility AND the delivery promise are location-dependent -- with
+# no location set Amazon renders neither (every item shows a "no delivery promise" block), so
+# a pincode is required to tell a genuinely buyable offer from a ghost "Only N left" listing.
+PINCODE = os.environ.get("AMAZON_IPHONE_PINCODE", "560035")
+
+# Only alert when Amazon actually commits a delivery promise for PINCODE (a real
+# PRIMARY_DELIVERY_MESSAGE, not NO_PROMISE_UPSELL_MESSAGE) -- i.e. Prime/deliverable and
+# genuinely buyable. Listings that say "Only N left" but give no delivery promise oversell
+# and are gone by checkout. Set AMAZON_IPHONE_REQUIRE_PRIME=false to alert on any in-stock offer.
+REQUIRE_PRIME = os.environ.get("AMAZON_IPHONE_REQUIRE_PRIME", "true").strip().lower() not in ("0", "false", "no")
+
 # Cap discovered ASINs to keep Amazon request volume (and browser cost) sane.
 AMAZON_MAX = int(os.environ.get("AMAZON_IPHONE_MAX", 25))
 # Only run the (multi-fetch) scan at most once per this many minutes. 0 = every trigger.
@@ -282,9 +293,21 @@ def _fetch_pages(asins: List[str], use_browser: bool) -> Dict[str, str]:
     if not asins:
         return pages
     if use_browser:
-        calls = [{"url": f"https://www.amazon.in/dp/{a}", "method": "GET"} for a in asins]
-        resp = brightdata_browser.browser_fetch("https://www.amazon.in/", calls) or []
-        for asin, r in zip(asins, resp):
+        # First set the delivery pincode in the session (Amazon accepts this without a CSRF
+        # token) so the product pages that follow render the real, location-specific buybox --
+        # Prime badge + delivery promise. Same-session fetches carry the location cookie it sets.
+        loc_call = {
+            "url": "https://www.amazon.in/gp/delivery/ajax/address-change.html", "method": "POST",
+            "headers": {"content-type": "application/x-www-form-urlencoded;charset=UTF-8",
+                        "x-requested-with": "XMLHttpRequest"},
+            "body": (f"locationType=LOCATION_INPUT&zipCode={PINCODE}&storeContext=generic"
+                     f"&deviceType=web&pageType=Detail&actionSource=glow"),
+            "credentials": "include",
+        }
+        prod_calls = [{"url": f"https://www.amazon.in/dp/{a}", "method": "GET",
+                       "credentials": "include"} for a in asins]
+        resp = brightdata_browser.browser_fetch("https://www.amazon.in/", [loc_call] + prod_calls) or []
+        for asin, r in zip(asins, resp[1:]):  # resp[0] is the address-change result
             if r and r.get("status") == 200:
                 pages[asin] = r.get("text") or ""
             else:
@@ -312,9 +335,22 @@ def _num(text: Optional[str]) -> Optional[float]:
         return None
 
 
+def _offer_feature(html: str, feat: str) -> Optional[str]:
+    """Value of a buybox offer-display feature (e.g. desktop-fulfiller-info = 'Ships from',
+    desktop-merchant-info = 'Sold by'). The value sits in a message span (or a seller link)
+    just after the feature's text widget; search a bounded window to keep the regex cheap."""
+    for m in re.finditer(r'offer-display-feature-name="' + re.escape(feat) + r'"', html):
+        w = html[m.end(): m.end() + 600]
+        vm = (re.search(r'offer-display-feature-text-message[^>]*>\s*([^<]+?)\s*<', w)
+              or re.search(r'<a[^>]*>\s*([^<]+?)\s*</a>', w))
+        if vm:
+            return vm.group(1).strip()
+    return None
+
+
 def _parse_stock(asin: str, html: str) -> Optional[Dict[str, Any]]:
-    """Parse title + availability (+ best-effort price) from a product page. Returns a base
-    iPhone 15/16/17 handset dict, or None (not a base handset / bot-stripped / CAPTCHA)."""
+    """Parse title + availability + fulfiller (+ best-effort price) from a product page.
+    Returns a base iPhone 15/16/17 handset dict, or None (not a base handset / CAPTCHA)."""
     if "validateCaptcha" in html or "Enter the characters you see" in html:
         print(f"[{get_ist_now()}] {asin}: CAPTCHA -- request was bot-flagged")
         return None
@@ -340,21 +376,50 @@ def _parse_stock(asin: str, html: str) -> Optional[Dict[str, Any]]:
     pay_m = (re.search(r'apex-pricetopay-value.*?a-price-whole"[^>]*>([0-9,]+)', html, re.S)
              or re.search(r'a-price-whole"[^>]*>([0-9,]+)', html))
     price = _num(pay_m.group(1)) if pay_m else None
+
+    ships_from = _offer_feature(html, "desktop-fulfiller-info")
+    sold_by = _offer_feature(html, "desktop-merchant-info")
+    prime = "a-icon-prime" in html  # a rendered Prime badge (location-dependent)
+    # Amazon commits a delivery date via a DELIVERY_BLOCK slot; when it can't actually deliver
+    # to PINCODE it emits NO_PROMISE_UPSELL_MESSAGE (or no slot). A real promise slot is the
+    # reliable "buyable for real" signal -- unlike a bare "Only N left" that oversells.
+    slots = re.findall(r"mir-layout-DELIVERY_BLOCK-slot-([A-Z_]+)", html)
+    deliverable = bool(slots) and any(s != "NO_PROMISE_UPSELL_MESSAGE" for s in slots)
+    dm = re.search(r'data-csa-c-delivery-time="([^"]+)"', html)
+    delivery = dm.group(1).strip() if dm else None
     return {
         "asin": asin,
         "title": title[:80],
         "in_stock": in_stock,
         "availability": avail or "(no availability text)",
         "price": price,
+        "ships_from": ships_from,
+        "sold_by": sold_by,
+        "prime": prime,
+        "deliverable": deliverable,
+        "delivery": delivery,
         "url": f"https://www.amazon.in/dp/{asin}",
     }
+
+
+def _fulfillment(p: Dict[str, Any]) -> str:
+    bits = []
+    if p.get("delivery"):
+        bits.append(f"delivery {p['delivery']}")
+    elif p.get("deliverable"):
+        bits.append("delivery promised")
+    if p.get("prime"):
+        bits.append("Prime")
+    if p.get("ships_from"):
+        bits.append(f"ships from {p['ships_from']}")
+    return " | ".join(bits) if bits else "no delivery promise"
 
 
 def _lines(items: List[Dict[str, Any]]) -> List[str]:
     out = []
     for p in items:
         price = f"Rs.{int(p['price'])}" if p.get("price") else "price n/a"
-        out.append(f"- {p['title']}: {price} | {p['availability']}\n  {p['url']}")
+        out.append(f"- {p['title']}: {price} | {p['availability']} | {_fulfillment(p)}\n  {p['url']}")
     return out
 
 
@@ -411,7 +476,7 @@ def check_amazon_iphone():
     use_browser = brightdata_browser.is_configured()
     print("=" * 60)
     print(f"Amazon iPhone stock monitor -- {get_ist_now()}")
-    print(f"Models: {', '.join(MODELS)}   "
+    print(f"Models: {', '.join(MODELS)}   Prime-only: {REQUIRE_PRIME} (pin {PINCODE})   "
           f"Source: {'Bright Data Scraping Browser' if use_browser else 'direct'}")
     print("=" * 60)
 
@@ -450,13 +515,23 @@ def check_amazon_iphone():
     for info in infos:
         status = "IN STOCK" if info["in_stock"] else "out of stock"
         price = f"Rs.{int(info['price'])}" if info.get("price") else "price n/a"
+        deliv = (info.get("delivery") or ("promised" if info["deliverable"] else "no-promise"))
         print(f"[{get_ist_now()}] {info['asin']}  {status:12s}  {price:12s}  "
-              f"{info['availability'][:22]:22.22}  {info['title'][:40]}")
-        if info["in_stock"]:
+              f"{info['availability'][:18]:18.18}  prime={'Y' if info['prime'] else 'N'}  "
+              f"deliver:{deliv[:16]:16.16}  {info['title'][:30]}")
+        # Only alert when Amazon commits a delivery promise (Prime/deliverable) unless
+        # REQUIRE_PRIME is off -- a bare 'Only N left' with no promise oversells and is gone
+        # by checkout (the false alert this guards against).
+        if info["in_stock"] and (info["deliverable"] or not REQUIRE_PRIME):
             in_stock.append(info)
 
     if not in_stock:
-        print(f"[{get_ist_now()}] No base iPhone handsets in stock.")
+        gated = [i for i in infos if i["in_stock"] and not i["deliverable"]]
+        if REQUIRE_PRIME and gated:
+            print(f"[{get_ist_now()}] {len(gated)} in stock but no Prime delivery promise to "
+                  f"{PINCODE} -- not alerting. Set AMAZON_IPHONE_REQUIRE_PRIME=false to include.")
+        else:
+            print(f"[{get_ist_now()}] No base iPhone handsets in stock.")
         return False
 
     print(f"[{get_ist_now()}] IN STOCK: {[p['asin'] for p in in_stock]}")

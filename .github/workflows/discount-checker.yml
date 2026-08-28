@@ -107,6 +107,9 @@ jobs:
           NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
           ALERT_COOLDOWN_HOURS: "12"
           AMAZON_IPHONE_MODELS: "15,16,17"
+          # Delivery pincode: Prime badge + delivery promise are location-specific. Only alert
+          # when Amazon commits a delivery promise here (real stock), not a ghost "Only N left".
+          AMAZON_IPHONE_PINCODE: "560035"
           # Amazon CAPTCHAs the datacenter IP, so on CI this runs through the Scraping
           # Browser (residential): it discovers base-handset ASINs from the search listing
           # (unioned with the always-checked seed ASINs, since the search is high-variance
