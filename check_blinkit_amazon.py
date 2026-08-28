@@ -43,7 +43,7 @@ except ImportError:
 import brightdata_browser
 
 IST = timezone(timedelta(hours=5, minutes=30))
-COOLDOWN_HOURS = float(os.environ.get("BLINKIT_COOLDOWN_HOURS", os.environ.get("ALERT_COOLDOWN_HOURS", 1)))
+COOLDOWN_HOURS = float(os.environ.get("BLINKIT_COOLDOWN_HOURS", os.environ.get("ALERT_COOLDOWN_HOURS", 24)))
 # Only hit the Scraping Browser at most once per this many minutes (credit conservation).
 RUN_INTERVAL_MIN = float(os.environ.get("BLINKIT_AMAZON_RUN_INTERVAL_MIN", 0))
 # Only alert when the card is actually DISCOUNTED (selling price < MRP) by at least this %.

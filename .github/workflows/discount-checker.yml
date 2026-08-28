@@ -99,6 +99,33 @@ jobs:
           python check_amazon.py
         continue-on-error: true
 
+      - name: Check Amazon iPhone 15/16/17 base-handset stock
+        env:
+          SENDER_EMAIL: ${{ secrets.SENDER_EMAIL }}
+          RECEIVER_EMAIL: ${{ secrets.RECEIVER_EMAIL }}
+          EMAIL_PASSWORD: ${{ secrets.EMAIL_PASSWORD }}
+          NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
+          ALERT_COOLDOWN_HOURS: "12"
+          AMAZON_IPHONE_MODELS: "15,16,17"
+          # Amazon CAPTCHAs the datacenter IP, so on CI this runs through the Scraping
+          # Browser (residential): it discovers base-handset ASINs from the search listing
+          # (unioned with the always-checked seed ASINs, since the search is high-variance
+          # and often outranks the base models), then reads each product page's availability.
+          BRIGHTDATA_BROWSER_WSS: ${{ secrets.BRIGHTDATA_BROWSER_WSS }}
+          BRIGHTDATA_BROWSER_WSS_2: ${{ secrets.BRIGHTDATA_BROWSER_WSS_2 }}
+          BRIGHTDATA_BROWSER_WSS_3: ${{ secrets.BRIGHTDATA_BROWSER_WSS_3 }}
+          BRIGHTDATA_BROWSER_WSS_4: ${{ secrets.BRIGHTDATA_BROWSER_WSS_4 }}
+          BRIGHTDATA_BROWSER_WSS_5: ${{ secrets.BRIGHTDATA_BROWSER_WSS_5 }}
+          BRIGHTDATA_BROWSER_WSS_6: ${{ secrets.BRIGHTDATA_BROWSER_WSS_6 }}
+          AMAZON_IPHONE_MAX: "25"
+          # Scan every 30 min; run the (extra) discovery listing session only every 4h -- the
+          # cheap scans in between reuse the last discovered set + seed ASINs.
+          AMAZON_IPHONE_RUN_INTERVAL_MIN: "30"
+          AMAZON_IPHONE_DISCOVERY_INTERVAL_MIN: "240"
+        run: |
+          python check_amazon_iphone.py
+        continue-on-error: true
+
       - name: Check Apple iPhone 16 same-day pickup (Saket + Noida / 110017)
         if: false  # disabled — replaced by iPhone 17 monitor below
         env:
@@ -194,7 +221,7 @@ jobs:
           RECEIVER_EMAIL: ${{ secrets.RECEIVER_EMAIL }}
           EMAIL_PASSWORD: ${{ secrets.EMAIL_PASSWORD }}
           NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
-          ALERT_COOLDOWN_HOURS: "1"
+          ALERT_COOLDOWN_HOURS: "24"
           BLINKIT_LAT: ${{ secrets.BLINKIT_LAT }}
           BLINKIT_LON: ${{ secrets.BLINKIT_LON }}
           # Blinkit 403s the datacenter IP -> route through the Scraping Browser,
@@ -306,11 +333,15 @@ jobs:
           NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
           ALERT_COOLDOWN_HOURS: "24"
           ZEPTO_MIN_DISCOUNT: "1.0"
-          # Set these secrets when GH Actions IP is blocked by Zepto bot detection.
-          # Grab fresh values from browser DevTools → Application → Cookies on zepto.com.
-          ZEPTO_SESSION_ID: ${{ secrets.ZEPTO_SESSION_ID }}
-          ZEPTO_XSRF_TOKEN: ${{ secrets.ZEPTO_XSRF_TOKEN }}
-          ZEPTO_CSRF_SECRET: ${{ secrets.ZEPTO_CSRF_SECRET }}
+          # Zepto's BFF sits behind an AWS-WAF JS challenge that blocks bare API clients
+          # -> route through the Bright Data Scraping Browser (real Chrome, residential IP).
+          BRIGHTDATA_BROWSER_WSS: ${{ secrets.BRIGHTDATA_BROWSER_WSS }}
+          BRIGHTDATA_BROWSER_WSS_2: ${{ secrets.BRIGHTDATA_BROWSER_WSS_2 }}
+          BRIGHTDATA_BROWSER_WSS_3: ${{ secrets.BRIGHTDATA_BROWSER_WSS_3 }}
+          BRIGHTDATA_BROWSER_WSS_4: ${{ secrets.BRIGHTDATA_BROWSER_WSS_4 }}
+          BRIGHTDATA_BROWSER_WSS_5: ${{ secrets.BRIGHTDATA_BROWSER_WSS_5 }}
+          BRIGHTDATA_BROWSER_WSS_6: ${{ secrets.BRIGHTDATA_BROWSER_WSS_6 }}
+          ZEPTO_RUN_INTERVAL_MIN: "120"
         run: |
           python check_zepto_amazon.py
         continue-on-error: true

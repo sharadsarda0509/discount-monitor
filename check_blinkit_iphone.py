@@ -15,7 +15,6 @@ cases, cables, chargers, covers etc. are filtered out.
 """
 
 import os
-import re
 import sys
 import json
 import smtplib
@@ -25,7 +24,7 @@ from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Any, Dict, List
 
-from iphone_models import models_summary
+from iphone_models import models_summary, is_base_handset
 
 try:
     from curl_cffi import requests as cffi_requests
@@ -114,25 +113,6 @@ BASE_HEADERS = {
     "Origin": "https://blinkit.com",
     "Referer": PRODUCT_URL,
 }
-
-_ACCESSORY = re.compile(
-    r"\b(case|cover|strap|glass|protector|charger|cable|adapter|screen|guard|"
-    r"skin|holder|mount|stand|airpod|band|tempered|wallet|magsafe|battery|"
-    r"power|pouch|sleeve|lens|film|dock|grip)\b", re.I)
-
-
-def _is_handset(name: str) -> bool:
-    """Exact base iPhone models only -- excludes Plus, Pro, Pro Max, Air, mini and 16e."""
-    if not re.search(r"\bi[pP]hone\b", name, re.I):
-        return False
-    if _ACCESSORY.search(name):
-        return False
-    if not re.search(r"\d+\s*(GB|TB)\b", name, re.I):
-        return False
-    pattern = (r"\bi[pP]hone\s*(" + "|".join(map(re.escape, MODELS)) +
-               r")\b(?!\s*(?:plus|pro|max|air|mini))")
-    return bool(re.search(pattern, name, re.I))
-
 
 def get_ist_now():
     return datetime.now(IST)
@@ -281,7 +261,7 @@ def parse_handsets(snippets: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         data = snippet.get("data", {})
         name_obj = data.get("name") or data.get("display_name") or {}
         name = (name_obj.get("text") or "").strip()
-        if not _is_handset(name):
+        if not is_base_handset(name, MODELS):
             continue
         is_sold_out = data.get("is_sold_out", True)
         inventory = data.get("inventory", 0)

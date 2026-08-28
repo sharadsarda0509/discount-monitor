@@ -39,8 +39,12 @@ except ImportError:
         print("Error: pip install -r requirements.txt")
         sys.exit(1)
 
+import brightdata_browser
+
 IST = timezone(timedelta(hours=5, minutes=30))
-COOLDOWN_HOURS = float(os.environ.get("ZEPTO_COOLDOWN_HOURS", os.environ.get("ALERT_COOLDOWN_HOURS", 1)))
+COOLDOWN_HOURS = float(os.environ.get("ZEPTO_COOLDOWN_HOURS", os.environ.get("ALERT_COOLDOWN_HOURS", 24)))
+# Only hit the Scraping Browser at most once per this many minutes (credit conservation).
+RUN_INTERVAL_MIN = float(os.environ.get("ZEPTO_RUN_INTERVAL_MIN", 0))
 STATE_DIR = Path(".alert_state")
 STATE_FILE = STATE_DIR / "last_alert.json"
 NTFY_TOPIC = os.environ.get("NTFY_TOPIC", "")
@@ -98,6 +102,40 @@ def record_alert(alert_type: str):
     STATE_FILE.write_text(json.dumps(state, indent=2))
 
 
+def _recently_scraped() -> bool:
+    """True if a browser scrape ran within RUN_INTERVAL_MIN -- skip to conserve credits."""
+    if RUN_INTERVAL_MIN <= 0:
+        return False
+    try:
+        state = json.loads(STATE_FILE.read_text()) if STATE_FILE.exists() else {}
+        last = state.get("zepto_amazon_lastrun")
+        if not last:
+            return False
+        last_time = datetime.fromisoformat(last)
+        if last_time.tzinfo is None:
+            last_time = last_time.replace(tzinfo=IST)
+        elapsed_min = (get_ist_now() - last_time).total_seconds() / 60
+        if elapsed_min < RUN_INTERVAL_MIN:
+            print(f"[{get_ist_now()}] Throttled: last scrape {elapsed_min:.0f}m ago "
+                  f"(< {RUN_INTERVAL_MIN:.0f}m) -- skipping to save Scraping Browser credits")
+            return True
+        return False
+    except Exception:
+        return False
+
+
+def _mark_scraped():
+    STATE_DIR.mkdir(exist_ok=True)
+    state = {}
+    if STATE_FILE.exists():
+        try:
+            state = json.loads(STATE_FILE.read_text())
+        except Exception:
+            pass
+    state["zepto_amazon_lastrun"] = get_ist_now().isoformat()
+    STATE_FILE.write_text(json.dumps(state, indent=2))
+
+
 def _sign(method: str, url_path: str, request_id: str, device_id: str, xsrf: str, body: Optional[str]) -> str:
     """
     Zepto request-signature: SHA-256(sorted_values joined by |)
@@ -150,43 +188,60 @@ def search_products(session: Dict[str, str]) -> List[Dict[str, Any]]:
     body_str = json.dumps(body_dict, separators=(",", ":"))
     sig = _sign("post", SEARCH_PATH, request_id, device_id, xsrf, body_str)
 
-    r = _SESSION.post(
-        f"{API_BASE}{SEARCH_PATH}",
-        headers={
-            "content-type": "application/json",
-            "x-csrf-secret": csrf_secret,
-            "x-xsrf-token": xsrf,
-            "x-without-bearer": "true",
-            "request-signature": sig,
-            "x-timezone": hashlib.sha256(sig.encode()).hexdigest(),
-            "platform": "WEB",
-            "tenant": "ZEPTO",
-            "auth_revamp_flow": "v2",
-            "auth_from_cookie": "true",
-            "marketplace_type": marketplace,
-            "session_id": session_id,
-            "sessionid": session_id,
-            "device_id": device_id,
-            "deviceid": device_id,
-            "request_id": request_id,
-            "requestid": request_id,
-            "store_id": _STORE_ID,
-            "storeid": _STORE_ID,
-            "store_ids": _STORE_IDS,
-            "app_version": "15.23.2",
-            "appversion": "15.23.2",
-            "source": "DIRECT",
-            "User-Agent": (
-                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-                "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-            ),
-        },
-        data=body_str,
-        timeout=30,
-    )
-    r.raise_for_status()
+    headers = {
+        "content-type": "application/json",
+        "x-csrf-secret": csrf_secret,
+        "x-xsrf-token": xsrf,
+        "x-without-bearer": "true",
+        "request-signature": sig,
+        "x-timezone": hashlib.sha256(sig.encode()).hexdigest(),
+        "platform": "WEB",
+        "tenant": "ZEPTO",
+        "auth_revamp_flow": "v2",
+        "auth_from_cookie": "true",
+        "marketplace_type": marketplace,
+        "session_id": session_id,
+        "sessionid": session_id,
+        "device_id": device_id,
+        "deviceid": device_id,
+        "request_id": request_id,
+        "requestid": request_id,
+        "store_id": _STORE_ID,
+        "storeid": _STORE_ID,
+        "store_ids": _STORE_IDS,
+        "app_version": "15.23.2",
+        "appversion": "15.23.2",
+        "source": "DIRECT",
+        "User-Agent": (
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        ),
+    }
 
-    data = r.json()
+    # Zepto's BFF now sits behind an AWS-WAF JS challenge that a bare API client can't
+    # solve (returns HTTP 202 + a challenge page instead of JSON). Route through the
+    # Scraping Browser: navigating zepto.com in a real Chrome mints the aws-waf-token
+    # cookie, then the same-session fetch to the bff-gateway host (cross-origin, so
+    # credentials:"include" to carry the cookie) succeeds.
+    if brightdata_browser.is_configured():
+        call = {"url": f"{API_BASE}{SEARCH_PATH}", "method": "POST",
+                "headers": headers, "body": body_str, "credentials": "include"}
+        resp = brightdata_browser.browser_fetch(
+            "https://www.zepto.com/", [call], wait_cookie="aws-waf-token") or []
+        if not resp or resp[0].get("status") != 200:
+            print(f"[{get_ist_now()}] browser search: HTTP {resp[0].get('status') if resp else 'n/a'}")
+            return []
+        try:
+            data = json.loads(resp[0].get("text") or "{}")
+        except ValueError:
+            return []
+    else:
+        r = _SESSION.post(
+            f"{API_BASE}{SEARCH_PATH}", headers=headers, data=body_str, timeout=30,
+        )
+        r.raise_for_status()
+        data = r.json()
+
     products: List[Dict[str, Any]] = []
     seen: set = set()
 
@@ -272,10 +327,15 @@ def send_email_alert(matches: List[Dict[str, Any]]) -> bool:
 
 
 def check_zepto_amazon():
+    use_browser = brightdata_browser.is_configured()
     print("=" * 60)
     print(f"Zepto Amazon Pay Gift Card Monitor -- {get_ist_now()}")
-    print(f"Min discount: {MIN_DISCOUNT_PCT}%  |  Store: 560035")
+    print(f"Min discount: {MIN_DISCOUNT_PCT}%  |  Store: 560035   "
+          f"Source: {'Bright Data Scraping Browser' if use_browser else 'direct'}")
     print("=" * 60)
+
+    if use_browser and _recently_scraped():
+        return False
 
     session = _make_session()
     print(f"[{get_ist_now()}] Session: id={session['session_id'][:8]}...  device={session['device_id'][:8]}...")
@@ -285,6 +345,8 @@ def check_zepto_amazon():
     except Exception as e:
         print(f"[{get_ist_now()}] Search failed: {e}")
         return False
+    if use_browser:
+        _mark_scraped()
 
     if not products:
         print(f"[{get_ist_now()}] No Amazon Pay products found in results")
@@ -298,11 +360,11 @@ def check_zepto_amazon():
             f"[{get_ist_now()}] {p['name'][:50]:50s}  {status:12s}  "
             f"Rs.{p['selling_price']:6d}  {disc}"
         )
-        if p["in_stock"] and p["discount_pct"] > MIN_DISCOUNT_PCT:
+        if p["in_stock"] and p["discount_pct"] >= MIN_DISCOUNT_PCT:
             matches.append(p)
 
     if not matches:
-        print(f"[{get_ist_now()}] No Amazon Pay gift cards with >{MIN_DISCOUNT_PCT}% discount.")
+        print(f"[{get_ist_now()}] No Amazon Pay gift cards with >={MIN_DISCOUNT_PCT}% discount.")
         return False
 
     print(f"[{get_ist_now()}] MATCH: {[m['name'] for m in matches]}")
