@@ -83,14 +83,15 @@ _SEARCH_URLS = [u.strip() for u in os.environ.get("AMAZON_IPHONE_SEARCH_URLS", "
 # a pincode is required to tell a genuinely buyable offer from a ghost "Only N left" listing.
 PINCODE = os.environ.get("AMAZON_IPHONE_PINCODE", "560035")
 
-# Only alert when Amazon actually commits a delivery promise for PINCODE (a real
-# PRIMARY_DELIVERY_MESSAGE, not NO_PROMISE_UPSELL_MESSAGE) -- i.e. Prime/deliverable and
-# genuinely buyable. Listings that say "Only N left" but give no delivery promise oversell
-# and are gone by checkout. Set AMAZON_IPHONE_REQUIRE_PRIME=false to alert on any in-stock offer.
+# Only alert on a genuine Prime offer: Amazon-fulfilled (buybox "Ships from Amazon") AND a
+# committed delivery promise to PINCODE (a real PRIMARY_DELIVERY_MESSAGE, not
+# NO_PROMISE_UPSELL_MESSAGE). A bare delivery promise is NOT enough -- a third-party
+# seller-fulfilled offer promises delivery too but isn't Prime, and those leaked through as
+# non-Prime alerts. Set AMAZON_IPHONE_REQUIRE_PRIME=false to alert on any in-stock offer.
 REQUIRE_PRIME = os.environ.get("AMAZON_IPHONE_REQUIRE_PRIME", "true").strip().lower() not in ("0", "false", "no")
 
 # Per-model storage allow-list (GB): only alert on these storages for the given model; a model
-# not listed alerts on any storage. Default: iPhone 17 -> 256 GB only (skip 512 GB / 1 TB).
+# not listed alerts on any storage. Default: iPhone 16 & 17 -> 256 GB only (skip 128/512 GB / 1 TB).
 # Override via AMAZON_IPHONE_STORAGE="17:256,17:128;16:128" (model:gb, comma/semicolon-separated).
 def _parse_storage_cfg(raw: str) -> Dict[str, set]:
     cfg: Dict[str, set] = {}
@@ -104,7 +105,7 @@ def _parse_storage_cfg(raw: str) -> Dict[str, set]:
     return cfg
 
 
-STORAGE_ALLOWED = _parse_storage_cfg(os.environ.get("AMAZON_IPHONE_STORAGE", "17:256"))
+STORAGE_ALLOWED = _parse_storage_cfg(os.environ.get("AMAZON_IPHONE_STORAGE", "17:256,16:256"))
 
 # Cap discovered ASINs to keep Amazon request volume (and browser cost) sane.
 AMAZON_MAX = int(os.environ.get("AMAZON_IPHONE_MAX", 25))
@@ -439,6 +440,15 @@ def _parse_stock(asin: str, html: str) -> Optional[Dict[str, Any]]:
     }
 
 
+def _prime_ok(p: Dict[str, Any]) -> bool:
+    """Genuine Prime delivery: an Amazon-fulfilled offer (buybox 'Ships from Amazon') that
+    also commits a real delivery promise to PINCODE. A bare delivery promise is NOT enough --
+    a third-party seller-fulfilled offer promises delivery too but isn't Prime; those were
+    leaking through the old deliverable-only gate as non-Prime alerts."""
+    ships = (p.get("ships_from") or "").strip().lower()
+    return bool(p.get("deliverable") and ships.startswith("amazon"))
+
+
 def _fulfillment(p: Dict[str, Any]) -> str:
     bits = []
     if p.get("delivery"):
@@ -554,10 +564,11 @@ def check_amazon_iphone():
         status = "IN STOCK" if info["in_stock"] else "out of stock"
         price = f"Rs.{int(info['price'])}" if info.get("price") else "price n/a"
         deliv = (info.get("delivery") or ("promised" if info["deliverable"] else "no-promise"))
-        eligible = info["in_stock"] and (info["deliverable"] or not REQUIRE_PRIME)
+        eligible = info["in_stock"] and (_prime_ok(info) or not REQUIRE_PRIME)
         note = "  [skip: storage]" if eligible and not info["storage_ok"] else ""
         print(f"[{get_ist_now()}] {info['asin']}  {status:12s}  {price:12s}  "
-              f"{info['availability'][:18]:18.18}  prime={'Y' if info['prime'] else 'N'}  "
+              f"{info['availability'][:18]:18.18}  prime={'Y' if _prime_ok(info) else 'N'}  "
+              f"ships:{(info.get('ships_from') or '-')[:10]:10.10}  "
               f"deliver:{deliv[:16]:16.16}  {info['title'][:30]}{note}")
         # Only alert when Amazon commits a delivery promise (Prime/deliverable) unless
         # REQUIRE_PRIME is off -- a bare 'Only N left' with no promise oversells and is gone by
@@ -566,15 +577,15 @@ def check_amazon_iphone():
             in_stock.append(info)
 
     if not in_stock:
-        gated = [i for i in infos if i["in_stock"] and not i["deliverable"]]
+        gated = [i for i in infos if i["in_stock"] and not _prime_ok(i)]
         filtered = [i for i in infos
-                    if i["in_stock"] and (i["deliverable"] or not REQUIRE_PRIME) and not i["storage_ok"]]
+                    if i["in_stock"] and (_prime_ok(i) or not REQUIRE_PRIME) and not i["storage_ok"]]
         if filtered:
             print(f"[{get_ist_now()}] {len(filtered)} in stock but excluded by "
                   f"AMAZON_IPHONE_STORAGE -- not alerting.")
         if REQUIRE_PRIME and gated:
-            print(f"[{get_ist_now()}] {len(gated)} in stock but no Prime delivery promise to "
-                  f"{PINCODE} -- not alerting. Set AMAZON_IPHONE_REQUIRE_PRIME=false to include.")
+            print(f"[{get_ist_now()}] {len(gated)} in stock but not Prime (Amazon-fulfilled + "
+                  f"delivery) to {PINCODE} -- not alerting. Set AMAZON_IPHONE_REQUIRE_PRIME=false to include.")
         elif not filtered:
             print(f"[{get_ist_now()}] No base iPhone handsets in stock.")
         return False
