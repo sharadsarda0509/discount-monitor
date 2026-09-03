@@ -117,8 +117,8 @@ jobs:
           # at most once/day and one model's alert never silences the others.
           AMAZON_IPHONE_COOLDOWN_HOURS: "24"
           AMAZON_IPHONE_MODELS: "15,16,17"
-          # iPhone 17: alert on 256 GB only (skip 512 GB / 1 TB). Format model:gb, comma/;-sep.
-          AMAZON_IPHONE_STORAGE: "17:256"
+          # iPhone 16 & 17: alert on 256 GB only (skip 128/512 GB / 1 TB). Format model:gb, comma/;-sep.
+          AMAZON_IPHONE_STORAGE: "17:256,16:256"
           # Delivery pincode: Prime badge + delivery promise are location-specific. Only alert
           # when Amazon commits a delivery promise here (real stock), not a ghost "Only N left".
           AMAZON_IPHONE_PINCODE: "560035"
