@@ -96,13 +96,19 @@ jobs:
           # Browser (residential): it discovers the current gift-card ASINs from the deals
           # listing (festival ASINs rotate, so a static seed list goes stale), then verifies
           # each via its product page.
-          # GB budget: each session fetches up to AMAZON_GC_MAX /dp/ HTMLs (~380 KB each) --
-          # the dominant Scraping Browser traffic. Capped at 8 (was 25) to cut ~2/3 of the
-          # bytes per session; known Rs.5000 ASINs are unioned first so they survive the cap.
-          AMAZON_GC_MAX: "8"
-          # Scan every 60 min (was 30): halves the session count. Discovery listing still only
-          # every 4h -- the cheap scans in between reuse the last discovered set + known ASINs.
-          AMAZON_RUN_INTERVAL_MIN: "60"
+          AMAZON_GC_MAX: "15"
+          # Fetch Amazon for FREE via Jina Reader (r.jina.ai) instead of Bright Data: Jina
+          # fetches from its own IPs, so no residential proxy / credits. Amazon-only switch --
+          # brightdata_browser routes only amazon.in origins to Jina; Blinkit/Zepto stay on
+          # Bright Data. JINA_API_KEY (free, 500 req/min + 10M tokens) lifts the keyless
+          # ~20 req/min limit, so MAX/frequency/concurrency can go up.
+          AMAZON_USE_JINA: "1"
+          JINA_API_KEY: ${{ secrets.JINA_API_KEY }}
+          JINA_CONCURRENCY: "5"
+          # Jina is free (no GB budget) -> scan every 10 min (was 60). Discovery still only
+          # every 4h. Kept at 10 (not 5) so this step + the 3-min iPhone-17 poll stay under
+          # the 5-min dispatch and runs don't pile up.
+          AMAZON_RUN_INTERVAL_MIN: "10"
           AMAZON_DISCOVERY_INTERVAL_MIN: "240"
         run: |
           python check_amazon.py
@@ -127,13 +133,17 @@ jobs:
           # Browser (residential): it discovers base-handset ASINs from the search listing
           # (unioned with the always-checked seed ASINs, since the search is high-variance
           # and often outranks the base models), then reads each product page's availability.
-          # GB budget: each session fetches up to AMAZON_IPHONE_MAX /dp/ HTMLs (~380 KB each) --
-          # the dominant Scraping Browser traffic. Capped at 8 (was 25); seed ASINs are unioned
-          # first so the tracked base handsets survive the cap.
           AMAZON_IPHONE_MAX: "8"
-          # Scan every 60 min (was 30): halves the session count. Discovery listing session still
-          # only every 4h -- the cheap scans in between reuse the last discovered set + seed ASINs.
-          AMAZON_IPHONE_RUN_INTERVAL_MIN: "60"
+          # Fetch Amazon for FREE via Jina Reader (see the gift-card step above). Amazon-only.
+          # CAVEAT: Jina returns the DEFAULT-location page (it can't persist the pincode glow
+          # cookie), so the 560035 Prime/delivery-promise gate isn't location-accurate through
+          # Jina. To keep pincode accuracy for handsets, remove AMAZON_USE_JINA here and point
+          # this step back at Bright Data. The gift-card step is unaffected (discount isn't
+          # location-specific).
+          AMAZON_USE_JINA: "1"
+          JINA_API_KEY: ${{ secrets.JINA_API_KEY }}
+          # Jina is free -> scan every 10 min (was 60). Discovery still only every 4h.
+          AMAZON_IPHONE_RUN_INTERVAL_MIN: "10"
           AMAZON_IPHONE_DISCOVERY_INTERVAL_MIN: "240"
         run: |
           python check_amazon_iphone.py

@@ -52,6 +52,7 @@ except ImportError:
     BeautifulSoup = None
 
 import brightdata_browser
+import jina_reader
 from iphone_models import is_base_handset, models_summary
 
 IST = timezone(timedelta(hours=5, minutes=30))
@@ -523,8 +524,10 @@ def check_amazon_iphone():
     use_browser = brightdata_browser.is_configured()
     print("=" * 60)
     print(f"Amazon iPhone stock monitor -- {get_ist_now()}")
+    src_label = ("Jina Reader (r.jina.ai)" if jina_reader.is_enabled()
+                 else ("Bright Data Scraping Browser" if use_browser else "direct"))
     print(f"Models: {', '.join(MODELS)}   Prime-only: {REQUIRE_PRIME} (pin {PINCODE})   "
-          f"Source: {'Bright Data Scraping Browser' if use_browser else 'direct'}")
+          f"Source: {src_label}")
     print("=" * 60)
 
     if _recently_ran():
@@ -532,7 +535,7 @@ def check_amazon_iphone():
 
     if _discovery_due():
         discovered = discover_asins_via_browser(AMAZON_MAX) if use_browser else discover_asins(AMAZON_MAX)
-        src = "Bright Data Scraping Browser" if use_browser else "direct"
+        src = src_label
         if discovered:
             _mark_discovery(discovered)
         else:

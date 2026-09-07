@@ -48,6 +48,7 @@ except ImportError:
     BeautifulSoup = None
 
 import brightdata_browser
+import jina_reader
 
 IST = timezone(timedelta(hours=5, minutes=30))
 COOLDOWN_HOURS = int(os.environ.get('ALERT_COOLDOWN_HOURS', 12))
@@ -471,9 +472,10 @@ def check_amazon():
     use_browser = brightdata_browser.is_configured()
     if _discovery_due():
         if use_browser:
-            # Amazon CAPTCHAs the datacenter IP -> discover via the residential Scraping Browser.
+            # Amazon CAPTCHAs the datacenter IP -> discover via the residential Scraping Browser
+            # (or Jina Reader when AMAZON_USE_JINA is set).
             discovered = discover_asins_via_browser(AMAZON_GC_MAX)
-            src = "Bright Data Scraping Browser"
+            src = "Jina Reader (r.jina.ai)" if jina_reader.is_enabled() else "Bright Data Scraping Browser"
         else:
             discovered = discover_asins(AMAZON_GC_MAX)  # direct (residential/local)
             src = "direct"

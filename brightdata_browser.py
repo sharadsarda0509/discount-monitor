@@ -28,6 +28,8 @@ import random
 import re
 from typing import Any, Dict, List, Optional
 
+import jina_reader
+
 WSS_ENV = "BRIGHTDATA_BROWSER_WSS"
 
 # Runs inside the remote browser page: execute each call with fetch() and collect the
@@ -83,7 +85,9 @@ def _wss_urls() -> List[str]:
 
 
 def is_configured() -> bool:
-    return bool(_wss_urls())
+    # Jina counts as "configured" too, so the Amazon monitors take the browser
+    # path (which we then route to Jina) even with the Bright Data secrets removed.
+    return bool(_wss_urls()) or jina_reader.is_enabled()
 
 
 def _wait_for_cookie(page, name: str, timeout_ms: int) -> None:
@@ -157,6 +161,13 @@ def browser_fetch(origin: str, calls: List[Dict[str, Any]],
     settle_ms alone for a fixed pause. A call may set credentials:"include" to send the
     origin's cookies on a cross-origin fetch (e.g. to a sibling API host).
     """
+    # Free Amazon path: when AMAZON_USE_JINA is set, route amazon.in fetches through
+    # Jina Reader (its own IPs, no residential proxy / Bright Data credits). Scoped to
+    # amazon origins only -- Blinkit/Zepto 403 through Jina, so they keep using the
+    # Bright Data Scraping Browser below, untouched.
+    if jina_reader.is_enabled() and "amazon." in (origin or ""):
+        return jina_reader.fetch(calls)
+
     urls = _wss_urls()
     if not urls:
         return None
