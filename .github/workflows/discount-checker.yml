@@ -95,13 +95,14 @@ jobs:
           # Amazon CAPTCHAs the datacenter IP, so on CI this runs through the Scraping
           # Browser (residential): it discovers the current gift-card ASINs from the deals
           # listing (festival ASINs rotate, so a static seed list goes stale), then verifies
-          # each via its product page. Throttled to once/120 min to conserve credits. Lower
-          # to 60/30 if your 3 WSS secrets are separate Bright Data accounts (more budget).
-          AMAZON_GC_MAX: "25"
-          # Scan every 30 min (max ~30-min detection lag), but only run the expensive dynamic
-          # discovery every 4h -- the cheap scans in between reuse the last discovered set +
-          # always-checked known ASINs, so higher frequency doesn't blow the browser budget.
-          AMAZON_RUN_INTERVAL_MIN: "30"
+          # each via its product page.
+          # GB budget: each session fetches up to AMAZON_GC_MAX /dp/ HTMLs (~380 KB each) --
+          # the dominant Scraping Browser traffic. Capped at 8 (was 25) to cut ~2/3 of the
+          # bytes per session; known Rs.5000 ASINs are unioned first so they survive the cap.
+          AMAZON_GC_MAX: "8"
+          # Scan every 60 min (was 30): halves the session count. Discovery listing still only
+          # every 4h -- the cheap scans in between reuse the last discovered set + known ASINs.
+          AMAZON_RUN_INTERVAL_MIN: "60"
           AMAZON_DISCOVERY_INTERVAL_MIN: "240"
         run: |
           python check_amazon.py
@@ -126,10 +127,13 @@ jobs:
           # Browser (residential): it discovers base-handset ASINs from the search listing
           # (unioned with the always-checked seed ASINs, since the search is high-variance
           # and often outranks the base models), then reads each product page's availability.
-          AMAZON_IPHONE_MAX: "25"
-          # Scan every 30 min; run the (extra) discovery listing session only every 4h -- the
-          # cheap scans in between reuse the last discovered set + seed ASINs.
-          AMAZON_IPHONE_RUN_INTERVAL_MIN: "30"
+          # GB budget: each session fetches up to AMAZON_IPHONE_MAX /dp/ HTMLs (~380 KB each) --
+          # the dominant Scraping Browser traffic. Capped at 8 (was 25); seed ASINs are unioned
+          # first so the tracked base handsets survive the cap.
+          AMAZON_IPHONE_MAX: "8"
+          # Scan every 60 min (was 30): halves the session count. Discovery listing session still
+          # only every 4h -- the cheap scans in between reuse the last discovered set + seed ASINs.
+          AMAZON_IPHONE_RUN_INTERVAL_MIN: "60"
           AMAZON_IPHONE_DISCOVERY_INTERVAL_MIN: "240"
         run: |
           python check_amazon_iphone.py
