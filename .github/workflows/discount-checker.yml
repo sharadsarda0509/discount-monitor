@@ -163,6 +163,12 @@ jobs:
           APPLE_COOLDOWN_HOURS: "0.25"
           APPLE_SAME_DAY_ONLY: "true"
           APPLE_REQUIRE_SAKET: "true"
+          # Pickup stock at Saket/Noida trickles in and vanishes in minutes; the workflow
+          # only fires every 5 min. This (free, direct) API is cheap, so poll it in a tight
+          # loop for 3 min per run -> detection latency drops from ~5 min to ~1 min. Kept
+          # under the 5-min dispatch (other steps ~90s) so runs don't pile up.
+          APPLE_POLL_SECONDS: "180"
+          APPLE_POLL_INTERVAL: "45"
         run: |
           python check_apple_iphone17.py
         continue-on-error: true

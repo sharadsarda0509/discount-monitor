@@ -9,6 +9,7 @@ Mirrors check_apple_iphone16.py — same API, same logic, updated SKUs.
 import os
 import sys
 import json
+import time
 import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
@@ -27,6 +28,14 @@ IST = timezone(timedelta(hours=5, minutes=30))
 COOLDOWN_HOURS = float(os.environ.get("APPLE_COOLDOWN_HOURS", os.environ.get("ALERT_COOLDOWN_HOURS", 1)))
 STATE_DIR = Path(".alert_state")
 STATE_FILE = STATE_DIR / "last_alert.json"
+
+# Same-day pickup stock at Saket/Noida trickles in and vanishes within minutes. The
+# workflow only fires every 5 min, so instead of a single snapshot per run we poll the
+# (free, direct) Apple pickup API in a tight loop for POLL_TOTAL_SECONDS at
+# POLL_INTERVAL_SECONDS cadence -- cutting detection latency from ~5 min to ~1 min.
+# POLL_TOTAL_SECONDS=0 (default) keeps the original single-shot behaviour for local runs.
+POLL_TOTAL_SECONDS = float(os.environ.get("APPLE_POLL_SECONDS", 0))
+POLL_INTERVAL_SECONDS = float(os.environ.get("APPLE_POLL_INTERVAL", 45))
 
 NTFY_TOPIC = os.environ.get("NTFY_TOPIC", "")
 
@@ -66,9 +75,12 @@ IPHONE17_COLORS = {
 
 
 def _buy_link(sku: str) -> str:
-    """Deep link that lands straight on Add-to-Bag for this exact SKU, skipping the
-    model/storage/colour funnel -- the fastest legitimate path to checkout."""
-    return f"https://www.apple.com/in/shop/buy-iphone?product={sku}&step=start"
+    """Buy box for this exact SKU. Deliberately drops the old `&step=start`: that jumped
+    straight to the DELIVERY review step, which shows 'Currently unavailable' for a hot
+    launch -- so tapping the alert looked like the item was already gone, even when
+    same-day PICKUP at Saket/Noida (what we actually alert on) was live. Landing on the
+    product buy box instead surfaces the Pick Up tab with the real store availability."""
+    return f"https://www.apple.com/in/shop/buy-iphone?product={sku}"
 
 
 def get_ist_now():
@@ -191,16 +203,18 @@ def send_ntfy_alert(pin: str, matches: List[Dict[str, Any]]):
         print(f"[{get_ist_now()}] ntfy not configured (NTFY_TOPIC empty)")
         return False
     try:
-        lines = [f"PIN {pin} - iPhone 17 same-day pickup available!\n"]
+        lines = [f"PIN {pin} - iPhone 17 SAME-DAY PICKUP available!\n"]
         for r in matches:
             lines.append(
                 f"- {r['color']}: {r['pickup_search_quote'] or 'Today'} "
                 f"@ {r['store_name']} ({r['store_id']})"
             )
-            lines.append(f"  Buy now: {_buy_link(r['sku'])}")
-        # tap the push -> straight to Add-to-Bag for the first available colour
+            lines.append(f"  Open: {_buy_link(r['sku'])}")
+        # On the buy box, pick "Pick Up" at the store above -- the Delivery tab shows
+        # unavailable for hot launches, which is what made past alerts look already-OOS.
+        lines.append("\nOn the page choose PICK UP at the store above (Delivery shows unavailable).")
         click_url = _buy_link(matches[0]["sku"])
-        lines.append(f"\nQuick checkout: {click_url}")
+        lines.append(f"Quick open: {click_url}")
         message = "\n".join(lines)
         requests.post(
             f"https://ntfy.sh/{NTFY_TOPIC}",
@@ -239,8 +253,15 @@ def send_email_alert(pin: str, matches: List[Dict[str, Any]]) -> bool:
                 f"- {r['color']}: {r['pickup_search_quote'] or 'Today'} "
                 f"@ {r['store_name']} ({r['store_id']})"
             )
-            lines.append(f"    Buy now (Add to Bag): {_buy_link(r['sku'])}")
-        lines.extend(["", f"Quick checkout: {_buy_link(matches[0]['sku'])}", "", f"Time: {ist_time}"])
+            lines.append(f"    Open buy box: {_buy_link(r['sku'])}")
+        lines.extend([
+            "",
+            "On the page choose PICK UP at the store above -- the Delivery tab shows "
+            "'Currently unavailable' for hot launches, which is not the pickup stock we alert on.",
+            f"Quick open: {_buy_link(matches[0]['sku'])}",
+            "",
+            f"Time: {ist_time}",
+        ])
         text_body = "\n".join(lines)
         msg = MIMEMultipart("alternative")
         msg["Subject"] = f"iPhone 17: same-day pickup available -- {len(matches)} match(es)"
@@ -257,29 +278,22 @@ def send_email_alert(pin: str, matches: List[Dict[str, Any]]) -> bool:
         return False
 
 
-def check_apple_iphone17():
-    print("=" * 60)
-    print(f"Apple iPhone 17 same-day pickup check -- {get_ist_now()}")
-    print(f"PIN code: {POSTAL_CODE}")
-    print(f"Target stores: {', '.join(ALLOWED_STORE_IDS)} (Saket + Noida)  require={REQUIRE_ALLOWED_STORE}")
-    print(f"Same-day only (IST): {SAME_DAY_ONLY}")
-    print("=" * 60)
-
+def _scan_once() -> List[Dict[str, Any]]:
+    """One fetch + parse + log pass. Returns the alertable matches (same-day pickup at a
+    target store), or [] on a request error / no matches."""
     try:
         raw = fetch_pickup_availability(POSTAL_CODE)
     except requests.RequestException as e:
         print(f"[{get_ist_now()}] Request failed: {e}")
-        sys.exit(1)
+        return []
 
     results = parse_store_results(raw)
-
     if not results:
         print(f"[{get_ist_now()}] No stores returned by API for PIN {POSTAL_CODE}.")
-        return False
+        return []
 
     saw_target = False
     alerts: List[Dict[str, Any]] = []
-
     for r in results:
         q = r["pickup_search_quote"] or r["pickup_display"] or "?"
         sd = "yes" if r["same_day_pickup"] else "no"
@@ -297,26 +311,57 @@ def check_apple_iphone17():
             alerts.append(r)
 
     if not saw_target:
-        print()
         print("!" * 60)
         print("NOTE: API returned no Saket (R756) or Noida (R787) for this PIN.")
         print("!" * 60)
 
     if not alerts:
         print(f"[{get_ist_now()}] No same-day pickup matches at target stores.")
-        return False
+    return alerts
 
-    alert_summary = ", ".join(f"{r['color']} @ {r['store_name']}" for r in alerts)
-    print(f"[{get_ist_now()}] Same-day pickup alert: {alert_summary}")
 
-    if not should_send_alert("apple_iphone17"):
-        return False
+def check_apple_iphone17():
+    print("=" * 60)
+    print(f"Apple iPhone 17 same-day pickup check -- {get_ist_now()}")
+    print(f"PIN code: {POSTAL_CODE}")
+    print(f"Target stores: {', '.join(ALLOWED_STORE_IDS)} (Saket + Noida)  require={REQUIRE_ALLOWED_STORE}")
+    print(f"Same-day only (IST): {SAME_DAY_ONLY}")
+    print(f"Poll window: {POLL_TOTAL_SECONDS:.0f}s @ {POLL_INTERVAL_SECONDS:.0f}s")
+    print("=" * 60)
 
-    ntfy_ok = send_ntfy_alert(POSTAL_CODE, alerts)
-    email_ok = send_email_alert(POSTAL_CODE, alerts)
-    if ntfy_ok or email_ok:
-        record_alert("apple_iphone17")
-    return ntfy_ok or email_ok
+    deadline = time.monotonic() + POLL_TOTAL_SECONDS
+    poll = 0
+    while True:
+        poll += 1
+        if POLL_TOTAL_SECONDS > 0:
+            print(f"--- poll #{poll} @ {get_ist_now()} ---")
+
+        alerts = _scan_once()
+        if alerts:
+            summary = ", ".join(f"{r['color']} @ {r['store_name']}" for r in alerts)
+            print(f"[{get_ist_now()}] Same-day pickup alert: {summary}")
+
+            if not should_send_alert("apple_iphone17"):
+                return False  # alerted <cooldown ago -> polling more this run is pointless
+
+            # Re-verify right before sending: hot pickup stock vanishes in minutes, so a
+            # match from a few seconds/polls ago may already be stale. Only send what is
+            # still live on a fresh fetch.
+            confirmed = _scan_once()
+            if not confirmed:
+                print(f"[{get_ist_now()}] Vanished on re-verify -- not sending; continue polling.")
+            else:
+                ntfy_ok = send_ntfy_alert(POSTAL_CODE, confirmed)
+                email_ok = send_email_alert(POSTAL_CODE, confirmed)
+                if ntfy_ok or email_ok:
+                    record_alert("apple_iphone17")
+                return ntfy_ok or email_ok
+
+        if time.monotonic() + POLL_INTERVAL_SECONDS >= deadline:
+            break
+        time.sleep(POLL_INTERVAL_SECONDS)
+
+    return False
 
 
 if __name__ == "__main__":
