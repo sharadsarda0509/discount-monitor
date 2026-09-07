@@ -135,11 +135,13 @@ jobs:
           # and often outranks the base models), then reads each product page's availability.
           AMAZON_IPHONE_MAX: "8"
           # Fetch Amazon for FREE via Jina Reader (see the gift-card step above). Amazon-only.
-          # CAVEAT: Jina returns the DEFAULT-location page (it can't persist the pincode glow
-          # cookie), so the 560035 Prime/delivery-promise gate isn't location-accurate through
-          # Jina. To keep pincode accuracy for handsets, remove AMAZON_USE_JINA here and point
-          # this step back at Bright Data. The gift-card step is unaffected (discount isn't
-          # location-specific).
+          # NOTE: stock detection AND the Prime gate both WORK through Jina -- verified an
+          # in-stock Amazon-fulfilled item parses in_stock=True, deliverable=True (real
+          # DELIVERY_BLOCK promise slot), ships_from=Amazon -> _prime_ok=True -> it alerts.
+          # Jina resolves a DEFAULT India location, so the delivery promise is for that, not
+          # 560035 specifically; a location-restricted offer could occasionally mismatch, but
+          # nationally-available base handsets are fine. Switch this step back to Bright Data
+          # only if you need strict 560035 accuracy.
           AMAZON_USE_JINA: "1"
           JINA_API_KEY: ${{ secrets.JINA_API_KEY }}
           # Jina is free -> scan every 10 min (was 60). Discovery still only every 4h.
