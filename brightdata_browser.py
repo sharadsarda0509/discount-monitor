@@ -61,6 +61,13 @@ _CHALLENGE_STATUSES = {0, 202}
 # before giving up -- caps the Scraping Browser credit cost of a persistently-blocked target.
 _CHALLENGE_FAILOVER_MAX = int(os.environ.get("BRIGHTDATA_CHALLENGE_FAILOVER_MAX", 3))
 
+# Cut Scraping Browser GB (Bright Data bills by traffic): abort image/media/font/CSS
+# subresources on navigation -- the heaviest part of loading a homepage like amazon.in
+# just to seed cookies. The data fetches run via fetch() inside the page (resource_type
+# "fetch"/"xhr"), so they're untouched; only the goto()'s decorative page chrome is dropped.
+_BLOCK_RESOURCES = os.environ.get("BRIGHTDATA_BLOCK_RESOURCES", "true").lower() in ("1", "true", "yes")
+_BLOCKED_TYPES = {"image", "media", "font", "stylesheet"}
+
 
 def _wss_urls() -> List[str]:
     """Collect the base endpoint plus any numbered siblings (BRIGHTDATA_BROWSER_WSS and
@@ -98,6 +105,18 @@ def _run_once(wss: str, origin: str, calls: List[Dict[str, Any]],
         browser = p.chromium.connect_over_cdp(wss, timeout=timeout_ms)
         try:
             page = browser.new_page()
+            if _BLOCK_RESOURCES:
+                # Best-effort: if this Scraping Browser endpoint rejects CDP request
+                # interception, don't let it kill the fetch -- just skip the GB saving.
+                try:
+                    page.route(
+                        "**/*",
+                        lambda route: route.abort()
+                        if route.request.resource_type in _BLOCKED_TYPES
+                        else route.continue_(),
+                    )
+                except Exception as e:
+                    print(f"[brightdata_browser] resource blocking unavailable: {e}")
             page.goto(origin, timeout=timeout_ms, wait_until="domcontentloaded")
             # Let an interstitial challenge (e.g. AWS WAF) run and set its cookie before
             # firing the fetches -- otherwise the API returns the challenge, not data.
