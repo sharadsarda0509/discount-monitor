@@ -32,6 +32,29 @@ gets flagged; don't use those for the actual purchase.
 The popup status shows `filled: N, missed: [...]`. Anything in `missed` needs a
 selector override (below).
 
+## Reset & open fresh (fresh client per attempt)
+Popup → **Reset & open fresh** (or **Alt+Shift+R**) does, in order:
+1. Rotates a new persona **seed** (resets the fingerprint spoof).
+2. Clears **all `apple.com` cookies** (every subdomain, via `chrome.cookies`) and
+   per-origin **localStorage / IndexedDB / CacheStorage / service workers / cache**
+   (via `chrome.browsingData`), plus session/localStorage of the current tab.
+3. Navigates to your configured **buy URL** so the next attempt starts clean.
+
+This runs *before* the session on purpose — clearing or spoofing *after* autofill
+(mid-checkout) would wipe the live cart/session and change nothing already sent.
+
+**Canvas/WebGL spoof** (Options → Behaviour toggle, default on but inert until you
+first use Reset): injects a *consistent, seeded* canvas + WebGL fingerprint at
+`document_start` in the page's MAIN world. It's seeded (not per-call random) so the
+persona is stable within a session and changes only on the next Reset.
+
+> ⚠️ **Honest caveat.** This extension's whole value (see above) is looking like a
+> *clean, real* browser. A spoofed fingerprint on an otherwise-real client can read
+> as **more** anomalous to Apple's anti-fraud, not less — mismatch/noise is itself a
+> signal. Cookie/storage clearing is the reliable lever; the fingerprint spoof is
+> best-effort and easy to turn off. **A separate clean Chrome profile (or container)
+> per attempt is more robust** than any in-page spoof.
+
 ## Config
 Set once in **Options** (stored in `chrome.storage.local`, this browser only):
 contact, fulfillment (pickup store / pickup person), delivery address, payment

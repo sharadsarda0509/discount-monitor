@@ -11,8 +11,8 @@ $('pickupPerson').addEventListener('change', toggleConditional);
 $('method').addEventListener('change', toggleConditional);
 
 async function load() {
-  const { appleAutofillProfile: p, appleAutofillSelectors: s, appleAutofillOnLoad: on } =
-    await chrome.storage.local.get(['appleAutofillProfile', 'appleAutofillSelectors', 'appleAutofillOnLoad']);
+  const { appleAutofillProfile: p, appleAutofillSelectors: s, appleAutofillOnLoad: on, fpSpoofEnabled: spoof } =
+    await chrome.storage.local.get(['appleAutofillProfile', 'appleAutofillSelectors', 'appleAutofillOnLoad', 'fpSpoofEnabled']);
   if (p) {
     $('buyUrl').value = p.buyUrl || '';
     const c = p.contact || {}; $('firstName').value = c.firstName || ''; $('lastName').value = c.lastName || '';
@@ -28,6 +28,7 @@ async function load() {
   }
   if (s) $('selectors').value = JSON.stringify(s, null, 2);
   $('onload').checked = !!on;
+  $('spoof').checked = spoof !== false; // default on (inert until first Reset)
   toggleConditional();
 }
 
@@ -49,7 +50,8 @@ $('save').addEventListener('click', async () => {
   await chrome.storage.local.set({
     appleAutofillProfile: profile,
     appleAutofillSelectors: selectors,
-    appleAutofillOnLoad: $('onload').checked
+    appleAutofillOnLoad: $('onload').checked,
+    fpSpoofEnabled: $('spoof').checked
   });
   $('saved').style.color = '#1a7f37';
   $('saved').textContent = 'Saved ✓';

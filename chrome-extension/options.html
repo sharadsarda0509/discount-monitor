@@ -83,6 +83,8 @@
 
   <h2>Behaviour</h2>
   <label><input type="checkbox" id="onload" style="width:auto"> Auto-fill automatically when a checkout page loads</label>
+  <label><input type="checkbox" id="spoof" style="width:auto"> Spoof canvas/WebGL fingerprint after "Reset &amp; open fresh"</label>
+  <div class="warn"><b>Read this before enabling.</b> "Reset &amp; open fresh" always rotates a persona seed and clears all apple.com cookies + storage. With this box on, it <i>also</i> injects a seeded canvas/WebGL fingerprint. Honest caveat: a spoofed fingerprint on an otherwise-real browser can look <b>more</b> anomalous to Apple's anti-fraud, not less. Leave it off unless you know you want it. A separate clean Chrome profile per attempt is more robust than in-page spoofing.</div>
 
   <div><button id="save">Save</button><span id="saved"></span></div>
   <script src="options.js"></script>

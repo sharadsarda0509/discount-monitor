@@ -38,4 +38,16 @@ $('fill').addEventListener('click', async () => {
   }
 });
 
+$('reset').addEventListener('click', async () => {
+  status('Rotating persona, clearing cookies/storage…');
+  try {
+    const r = await chrome.runtime.sendMessage({ type: 'reset-open' });
+    if (r && r.error) status('Reset failed: ' + r.error);
+    else if (r && r.opened) status('Fresh session — buy page opening.');
+    else status('Cleared. Set a buy URL in config to auto-open.');
+  } catch (e) {
+    status('Reset failed: ' + (e.message || e));
+  }
+});
+
 $('opts').addEventListener('click', (e) => { e.preventDefault(); chrome.runtime.openOptionsPage(); });
