@@ -10,19 +10,18 @@
  */
 
 const DEFAULT_SELECTORS = {
-  firstName: 'input[name="firstName"], [data-autom="form-field-firstName"], input[autocomplete="given-name"]',
-  lastName:  'input[name="lastName"], [data-autom="form-field-lastName"], input[autocomplete="family-name"]',
+  firstName: 'input[name="firstName"], input[data-autom="form-field-firstName"], input[autocomplete="given-name"]',
+  lastName:  'input[name="lastName"], input[data-autom="form-field-lastName"], input[autocomplete="family-name"]',
   email:     'input[autocomplete="email"], input[type="email"], input[name*="email" i]',
   phone:     'input[autocomplete="tel"], input[type="tel"], input[name*="phone" i], input[id*="phone" i]',
 
   // Apple IN address (delivery AND the card's Billing Address) uses these exact names.
-  line1:     'input[name="street"], [data-autom="form-field-street"], input[autocomplete="address-line1"]',
-  line2:     'input[name="street2"], [data-autom="form-field-street2"], input[autocomplete="address-line2"]',
-  landmark:  'input[name="street3"], [data-autom="form-field-street3"], input[autocomplete="address-line3"], input[name*="landmark" i]',
-  pincode:   'input[name="postalCode"], [data-autom="form-field-postalCode"], input[autocomplete="postal-code"]',
-  // India derives City+State from the PIN via this <select> (no city/state text fields);
-  // its options load async after the PIN is entered.
-  cityState: 'select[name="zipLookupCityState"], select[data-autom="form-field-zipLookupCityState"]',
+  // We do NOT set city/state -- entering the PIN triggers Apple's async lookup that
+  // fills the City/State dropdown itself; setting it manually fights that.
+  line1:     'input[name="street"], input[data-autom="form-field-street"], input[autocomplete="address-line1"]',
+  line2:     'input[name="street2"], input[data-autom="form-field-street2"], input[autocomplete="address-line2"]',
+  landmark:  'input[name="street3"], input[data-autom="form-field-street3"], input[autocomplete="address-line3"]',
+  pincode:   'input[name="postalCode"], input[data-autom="form-field-postalCode"], input[autocomplete="postal-code"]',
 
   cardNumber: 'input[data-autom="card-number-input"], input[autocomplete="cc-number"]',
   cardName:   'input[autocomplete="cc-name"], input[name*="nameOnCard" i]',
@@ -34,10 +33,21 @@ const DEFAULT_SELECTORS = {
 const STORAGE_KEYS = ['appleAutofillProfile', 'appleAutofillSelectors', 'appleAutofillOnLoad'];
 
 function setReactValue(el, value) {
-  const proto = el instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
-  const setter = Object.getOwnPropertyDescriptor(proto, 'value')?.set;
-  if (setter) setter.call(el, value); else el.value = value;
-  el.dispatchEvent(new Event('input',  { bubbles: true }));
+  const v = String(value);
+  try { el.focus(); } catch (e) {}
+  // Select any existing content so insertText replaces it, then type via
+  // execCommand -- this fires a real InputEvent that stubborn formatted/masked
+  // React inputs (Apple's card-number field) accept, unlike a bare value set.
+  try { el.setSelectionRange(0, (el.value || '').length); } catch (e) {}
+  let ok = false;
+  try { ok = document.execCommand('insertText', false, v); } catch (e) {}
+  if (!ok || !el.value) {
+    // Fallback for plain fields / inputs where execCommand is a no-op (e.g. number).
+    const proto = el instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
+    const setter = Object.getOwnPropertyDescriptor(proto, 'value')?.set;
+    if (setter) setter.call(el, v); else el.value = v;
+    el.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: v }));
+  }
   el.dispatchEvent(new Event('change', { bubbles: true }));
   el.dispatchEvent(new Event('blur',   { bubbles: true }));
 }
@@ -53,7 +63,9 @@ function setSelectValue(el, value) {
 
 function fill(selector, value, results, label) {
   if (value == null || value === '') return;
-  const els = [...document.querySelectorAll(selector)];  // fill ALL matches (delivery + billing blocks)
+  const els = [...document.querySelectorAll(selector)].filter((el) =>
+    ['INPUT', 'SELECT', 'TEXTAREA'].includes(el.tagName) && !el.disabled && !el.readOnly && el.offsetParent !== null
+  );  // fill ALL editable, visible matches (delivery + billing); skip view-mode spans
   if (!els.length) { results.missed.push(label); return; }
   let done = 0;
   for (const el of els) {
@@ -92,16 +104,9 @@ async function runAutofill() {
   fill(sel.line1, d.line1, r, 'street');
   fill(sel.line2, d.line2, r, 'street2');
   fill(sel.landmark, d.landmark, r, 'landmark');
+  // PIN last: entering it triggers Apple's async City/State auto-lookup -- we don't
+  // touch the City/State dropdown ourselves.
   fill(sel.pincode, d.pincode, r, 'pincode');
-  // City+State is a <select> that auto-populates from the PIN via an async lookup --
-  // set it once the options arrive.
-  if (d.cityState) {
-    for (const delay of [800, 1600, 2600]) {
-      setTimeout(() => {
-        document.querySelectorAll(sel.cityState).forEach((s) => setSelectValue(s, d.cityState));
-      }, delay);
-    }
-  }
 
   const pay = p.payment || {};
   if (pay.method === 'card') {
