@@ -161,13 +161,35 @@ def browser_fetch(origin: str, calls: List[Dict[str, Any]],
     settle_ms alone for a fixed pause. A call may set credentials:"include" to send the
     origin's cookies on a cross-origin fetch (e.g. to a sibling API host).
     """
-    # Free Amazon path: when AMAZON_USE_JINA is set, route amazon.in fetches through
-    # Jina Reader (its own IPs, no residential proxy / Bright Data credits). Scoped to
-    # amazon origins only -- Blinkit/Zepto 403 through Jina, so they keep using the
-    # Bright Data Scraping Browser below, untouched.
+    # Free Amazon path: when AMAZON_USE_JINA is set, fetch amazon.in through Jina Reader
+    # (its own IPs, no residential proxy / Bright Data credits). Scoped to amazon origins
+    # only -- Blinkit/Zepto 403 through Jina, so they keep using Bright Data below.
+    # Fallback chain: Jina (with in-request CAPTCHA/429 retry) -> Bright Data residential
+    # browser for any calls Jina still can't return a clean page for.
     if jina_reader.is_enabled() and "amazon." in (origin or ""):
-        return jina_reader.fetch(calls)
+        results = jina_reader.fetch(calls)
+        failed = [i for i, r in enumerate(results) if not _clean(r)]
+        if failed and _wss_urls():
+            print(f"[brightdata_browser] Jina left {len(failed)}/{len(calls)} amazon "
+                  f"call(s) CAPTCHA/failed -> Bright Data fallback")
+            sub = _cdp_fetch([calls[i] for i in failed], origin, timeout_ms, settle_ms, wait_cookie) or []
+            for j, i in enumerate(failed):
+                if j < len(sub) and _clean(sub[j]):
+                    results[i] = sub[j]
+        return results
 
+    return _cdp_fetch(calls, origin, timeout_ms, settle_ms, wait_cookie)
+
+
+def _clean(r: Optional[Dict[str, Any]]) -> bool:
+    """A usable result: HTTP 200 and not an Amazon bot-check/CAPTCHA page."""
+    return bool(r) and r.get("status") == 200 and not jina_reader.is_captcha(r.get("text") or "")
+
+
+def _cdp_fetch(calls: List[Dict[str, Any]], origin: str, timeout_ms: int,
+               settle_ms: int, wait_cookie: Optional[str]) -> Optional[List[Dict[str, Any]]]:
+    """Run `calls` through the Bright Data Scraping Browser: rotate across endpoints and
+    fail over on connection error / uncleared challenge. Returns [{status,text}] or None."""
     urls = _wss_urls()
     if not urls:
         return None

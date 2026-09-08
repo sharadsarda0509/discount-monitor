@@ -15,6 +15,7 @@ fetch(calls) mirrors brightdata_browser.browser_fetch's return contract --
 """
 
 import os
+import re
 import time
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Dict, List
@@ -32,6 +33,16 @@ READER = "https://r.jina.ai/"
 _CONCURRENCY = int(os.environ.get("JINA_CONCURRENCY", 2))
 _TIMEOUT = int(os.environ.get("JINA_TIMEOUT", 40))
 _RETRIES = int(os.environ.get("JINA_RETRIES", 2))
+
+# Amazon serves a bot-check/CAPTCHA page (HTTP 200) to Jina's shared IPs sometimes.
+# Detect it so _one() can retry (keyless Jina rotates IPs per request) and, failing that,
+# report it as a failure so the caller can fall back to Bright Data.
+_CAPTCHA_RE = re.compile(r"validateCaptcha|Enter the characters you see|Robot Check|"
+                         r"not a robot|automated access to Amazon", re.I)
+
+
+def is_captcha(text: str) -> bool:
+    return bool(text) and bool(_CAPTCHA_RE.search(text))
 
 
 def is_enabled() -> bool:
@@ -59,6 +70,7 @@ def _one(call: Dict[str, Any]) -> Dict[str, Any]:
         return {"status": 0, "text": ""}
     use_key = bool(os.environ.get("JINA_API_KEY", "").strip())
     last = 0
+    captcha_text = ""
     for attempt in range(_RETRIES + 1):
         try:
             r = _fetch(url, use_key)
@@ -69,6 +81,15 @@ def _one(call: Dict[str, Any]) -> Dict[str, Any]:
                 continue
             return {"status": 0, "text": str(e)}
         if r.status_code == 200:
+            if is_captcha(r.text):
+                # Amazon served a bot-check to this Jina IP. Back off and retry -- keyless
+                # Jina rotates IPs per request, so another try may land on a clean one.
+                last = 0
+                captcha_text = r.text
+                if attempt < _RETRIES:
+                    time.sleep(3 * (attempt + 1))
+                    continue
+                break  # exhausted -> report failed so the caller falls back to Bright Data
             return {"status": 200, "text": r.text}
         last = r.status_code
         # 402 = key token balance exhausted -> retry the SAME url keyless (free).
@@ -80,7 +101,8 @@ def _one(call: Dict[str, Any]) -> Dict[str, Any]:
             time.sleep(3 * (attempt + 1))
             continue
         break
-    return {"status": last, "text": ""}  # non-200 -> caller skips this page
+    # non-200 (or unresolved CAPTCHA -> status 0) -> caller can fall back to Bright Data
+    return {"status": last, "text": captcha_text}
 
 
 def fetch(calls: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
