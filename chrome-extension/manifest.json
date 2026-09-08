@@ -1,0 +1,24 @@
+{
+  "manifest_version": 3,
+  "name": "Apple IN Guest Checkout Autofill",
+  "version": "0.1.0",
+  "description": "Fills your saved guest-checkout details on apple.com/in fast. You review and complete OTP + Place Order yourself.",
+  "permissions": ["storage", "activeTab", "scripting"],
+  "host_permissions": ["https://www.apple.com/in/*"],
+  "action": { "default_popup": "popup.html", "default_title": "Apple IN Autofill" },
+  "options_page": "options.html",
+  "background": { "service_worker": "background.js" },
+  "content_scripts": [
+    {
+      "matches": ["https://www.apple.com/in/*"],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ],
+  "commands": {
+    "autofill": {
+      "suggested_key": { "default": "Alt+Shift+F" },
+      "description": "Autofill the current Apple IN checkout page"
+    }
+  }
+}

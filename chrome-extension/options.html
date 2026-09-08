@@ -1,0 +1,92 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Apple IN Autofill — Config</title>
+  <style>
+    body { font: 14px/1.5 -apple-system, system-ui, sans-serif; max-width: 640px; margin: 24px auto; padding: 0 16px; color: #1d1d1f; }
+    h1 { font-size: 20px; } h2 { font-size: 15px; margin: 22px 0 6px; border-bottom: 1px solid #e5e5e7; padding-bottom: 4px; }
+    label { display: block; margin: 8px 0 2px; font-size: 12px; color: #555; }
+    input, select, textarea { width: 100%; padding: 7px; border: 1px solid #d2d2d7; border-radius: 8px; box-sizing: border-box; font-size: 13px; }
+    .row { display: flex; gap: 10px; } .row > div { flex: 1; }
+    .warn { background: #fff8e6; border: 1px solid #ffe08a; border-radius: 8px; padding: 8px 10px; font-size: 12px; margin: 10px 0; }
+    button { margin-top: 16px; padding: 9px 16px; border: none; border-radius: 8px; background: #0071e3; color: #fff; font-size: 14px; cursor: pointer; }
+    #saved { color: #1a7f37; margin-left: 10px; font-size: 13px; }
+    textarea { font-family: ui-monospace, monospace; height: 120px; }
+    .muted { color: #888; font-size: 11px; }
+  </style>
+</head>
+<body>
+  <h1>Apple IN Guest Checkout Autofill</h1>
+  <p class="muted">Fills your details on apple.com/in. You still review and complete OTP + Place Order. Data is stored locally in this browser only.</p>
+
+  <h2>Buy target</h2>
+  <label>Buy page URL (exact SKU/config)</label>
+  <input id="buyUrl" placeholder="https://www.apple.com/in/shop/buy-iphone/iphone-17/6.3%22-display-256gb-white">
+
+  <h2>Contact</h2>
+  <div class="row">
+    <div><label>First name</label><input id="firstName"></div>
+    <div><label>Last name</label><input id="lastName"></div>
+  </div>
+  <div class="row">
+    <div><label>Email</label><input id="email" type="email"></div>
+    <div><label>Phone (10-digit)</label><input id="phone"></div>
+  </div>
+
+  <h2>Fulfillment</h2>
+  <div class="row">
+    <div><label>Mode</label>
+      <select id="mode"><option value="pickup">Pickup</option><option value="delivery">Delivery</option></select></div>
+    <div><label>Pickup store (name or code)</label><input id="store" placeholder="Apple Saket / R756"></div>
+  </div>
+  <label>Who's picking up?</label>
+  <select id="pickupPerson"><option value="self">Myself (uses Contact above)</option><option value="other">Someone else</option></select>
+  <div id="otherWrap" style="display:none">
+    <div class="row">
+      <div><label>Pickup first name</label><input id="oFirst"></div>
+      <div><label>Pickup last name</label><input id="oLast"></div>
+    </div>
+    <div class="row">
+      <div><label>Pickup email</label><input id="oEmail"></div>
+      <div><label>Pickup phone</label><input id="oPhone"></div>
+    </div>
+  </div>
+
+  <h2>Delivery address <span class="muted">(only if mode = Delivery)</span></h2>
+  <label>Address line 1</label><input id="line1">
+  <label>Address line 2</label><input id="line2">
+  <div class="row">
+    <div><label>Landmark</label><input id="landmark"></div>
+    <div><label>Pincode</label><input id="pincode"></div>
+  </div>
+  <div class="row">
+    <div><label>City</label><input id="city"></div>
+    <div><label>State</label><input id="state"></div>
+  </div>
+
+  <h2>Payment</h2>
+  <div class="warn">Recommended: use <b>UPI</b> and leave card fields blank (type card/CVV by hand). Card number + CVV stored here are unencrypted in this browser.</div>
+  <label>Method</label>
+  <select id="method"><option value="upi">UPI</option><option value="card">Card</option><option value="netbanking">Net banking (fill manually)</option></select>
+  <div id="upiWrap"><label>UPI ID</label><input id="upiId" placeholder="name@bank"></div>
+  <div id="cardWrap" style="display:none">
+    <label>Card number</label><input id="cardNumber" autocomplete="off">
+    <label>Name on card</label><input id="cardName">
+    <div class="row">
+      <div><label>Expiry (MM/YY)</label><input id="exp" placeholder="09/28"></div>
+      <div><label>CVV</label><input id="cvv" autocomplete="off"></div>
+    </div>
+  </div>
+
+  <h2>Advanced — selector overrides <span class="muted">(JSON; leave blank to use defaults)</span></h2>
+  <p class="muted">If a field isn't filling, inspect it on the checkout page (right-click → Inspect) and put a CSS selector here, e.g. <code>{"pincode": "#postalCode"}</code>.</p>
+  <textarea id="selectors" placeholder='{ "pincode": "input#postalCode", "phone": "input#phoneNumber" }'></textarea>
+
+  <h2>Behaviour</h2>
+  <label><input type="checkbox" id="onload" style="width:auto"> Auto-fill automatically when a checkout page loads</label>
+
+  <div><button id="save">Save</button><span id="saved"></span></div>
+  <script src="options.js"></script>
+</body>
+</html>
