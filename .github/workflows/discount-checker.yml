@@ -96,18 +96,18 @@ jobs:
           # Browser (residential): it discovers the current gift-card ASINs from the deals
           # listing (festival ASINs rotate, so a static seed list goes stale), then verifies
           # each via its product page.
-          AMAZON_GC_MAX: "15"
+          AMAZON_GC_MAX: "8"
           # Fetch Amazon for FREE via Jina Reader (r.jina.ai) instead of Bright Data: Jina
           # fetches from its own IPs, so no residential proxy / credits. Amazon-only switch --
           # brightdata_browser routes only amazon.in origins to Jina; Blinkit/Zepto stay on
-          # Bright Data. JINA_API_KEY (free, 500 req/min + 10M tokens) lifts the keyless
-          # ~20 req/min limit, so MAX/frequency/concurrency can go up.
+          # Bright Data. Run KEYLESS: keyless is rate-limited (~20 req/min) but NOT token-
+          # metered, so it never runs out. A free JINA_API_KEY is faster (500 rpm) but its
+          # small token grant is burned by full-HTML pages within hours -> then 402; not worth
+          # it here. MAX/concurrency kept modest to stay under the keyless rate limit;
+          # jina_reader retries on 429 and falls back to keyless on 402.
           AMAZON_USE_JINA: "1"
-          JINA_API_KEY: ${{ secrets.JINA_API_KEY }}
-          JINA_CONCURRENCY: "5"
-          # Jina is free (no GB budget) -> scan every 10 min (was 60). Discovery still only
-          # every 4h. Kept at 10 (not 5) so this step + the 3-min iPhone-17 poll stay under
-          # the 5-min dispatch and runs don't pile up.
+          JINA_CONCURRENCY: "2"
+          # Free -> scan every 10 min (was 60). Discovery listing still only every 4h.
           AMAZON_RUN_INTERVAL_MIN: "10"
           AMAZON_DISCOVERY_INTERVAL_MIN: "240"
         run: |
@@ -143,8 +143,8 @@ jobs:
           # nationally-available base handsets are fine. Switch this step back to Bright Data
           # only if you need strict 560035 accuracy.
           AMAZON_USE_JINA: "1"
-          JINA_API_KEY: ${{ secrets.JINA_API_KEY }}
-          # Jina is free -> scan every 10 min (was 60). Discovery still only every 4h.
+          JINA_CONCURRENCY: "2"
+          # Keyless Jina (free, ~20 req/min) -> scan every 10 min. Discovery still only every 4h.
           AMAZON_IPHONE_RUN_INTERVAL_MIN: "10"
           AMAZON_IPHONE_DISCOVERY_INTERVAL_MIN: "240"
         run: |
