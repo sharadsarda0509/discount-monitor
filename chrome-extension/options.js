@@ -22,7 +22,7 @@ async function load() {
     const o = f.other || {}; $('oFirst').value = o.firstName || ''; $('oLast').value = o.lastName || '';
     $('oEmail').value = o.email || ''; $('oPhone').value = o.phone || '';
     const d = p.delivery || {}; $('line1').value = d.line1 || ''; $('line2').value = d.line2 || '';
-    $('landmark').value = d.landmark || ''; $('pincode').value = d.pincode || ''; $('city').value = d.city || ''; $('state').value = d.state || '';
+    $('landmark').value = d.landmark || ''; $('pincode').value = d.pincode || ''; $('cityState').value = d.cityState || '';
     const pay = p.payment || {}; $('method').value = pay.method || 'upi'; $('upiId').value = pay.upiId || '';
     $('cardNumber').value = pay.cardNumber || ''; $('cardName').value = pay.cardName || ''; $('exp').value = pay.exp || ''; $('cvv').value = pay.cvv || '';
   }
@@ -39,7 +39,7 @@ $('save').addEventListener('click', async () => {
       mode: val('mode'), store: val('store'), pickupPerson: val('pickupPerson'),
       other: { firstName: val('oFirst'), lastName: val('oLast'), email: val('oEmail'), phone: val('oPhone') }
     },
-    delivery: { line1: val('line1'), line2: val('line2'), landmark: val('landmark'), pincode: val('pincode'), city: val('city'), state: val('state') },
+    delivery: { line1: val('line1'), line2: val('line2'), landmark: val('landmark'), pincode: val('pincode'), cityState: val('cityState') },
     payment: { method: val('method'), upiId: val('upiId'), cardNumber: val('cardNumber'), cardName: val('cardName'), exp: val('exp'), cvv: val('cvv') }
   };
   let selectors = {};
