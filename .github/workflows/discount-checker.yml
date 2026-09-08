@@ -30,6 +30,7 @@ jobs:
       BRIGHTDATA_BROWSER_WSS_6: ${{ secrets.BRIGHTDATA_BROWSER_WSS_6 }}
       BRIGHTDATA_BROWSER_WSS_7: ${{ secrets.BRIGHTDATA_BROWSER_WSS_7 }}
       BRIGHTDATA_BROWSER_WSS_8: ${{ secrets.BRIGHTDATA_BROWSER_WSS_8 }}
+      BRIGHTDATA_BROWSER_WSS_9: ${{ secrets.BRIGHTDATA_BROWSER_WSS_9 }}
 
     steps:
       - name: Checkout repository
