@@ -4,15 +4,16 @@
   "version": "0.1.0",
   "description": "Fills your saved guest-checkout details on apple.com/in fast. You review and complete OTP + Place Order yourself.",
   "permissions": ["storage", "activeTab", "scripting"],
-  "host_permissions": ["https://www.apple.com/in/*"],
+  "host_permissions": ["https://*.apple.com/in/*"],
   "action": { "default_popup": "popup.html", "default_title": "Apple IN Autofill" },
   "options_page": "options.html",
   "background": { "service_worker": "background.js" },
   "content_scripts": [
     {
-      "matches": ["https://www.apple.com/in/*"],
+      "matches": ["https://*.apple.com/in/*"],
       "js": ["content.js"],
-      "run_at": "document_idle"
+      "run_at": "document_idle",
+      "all_frames": true
     }
   ],
   "commands": {

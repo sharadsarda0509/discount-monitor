@@ -10,14 +10,31 @@ $('open').addEventListener('click', async () => {
   status('Opening buy page…');
 });
 
+async function autofillTab(tabId) {
+  try {
+    return await chrome.tabs.sendMessage(tabId, { type: 'autofill' });
+  } catch (e) {
+    // Content script not present (e.g. page loaded before the extension, or a
+    // host added later like secure8.store.apple.com). Inject it on demand via
+    // activeTab, then retry.
+    await chrome.scripting.executeScript({ target: { tabId }, files: ['content.js'] });
+    await new Promise((r) => setTimeout(r, 350));
+    return await chrome.tabs.sendMessage(tabId, { type: 'autofill' });
+  }
+}
+
 $('fill').addEventListener('click', async () => {
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+  if (!/^https:\/\/[^/]*\.apple\.com\/in\//.test(tab.url || '')) {
+    status('Open an apple.com/in (or store.apple.com/in) page first.');
+    return;
+  }
   try {
-    const r = await chrome.tabs.sendMessage(tab.id, { type: 'autofill' });
+    const r = await autofillTab(tab.id);
     if (r) status(`Filled ${r.filled.length}${r.missed.length ? `, missed: ${r.missed.join(', ')}` : ''}`);
-    else status('No response — are you on apple.com/in?');
+    else status('No response from the page.');
   } catch (e) {
-    status('Open an apple.com/in checkout page first.');
+    status('Could not inject on this page: ' + (e.message || e));
   }
 });
 
