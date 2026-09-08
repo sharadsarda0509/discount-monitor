@@ -125,8 +125,8 @@ jobs:
           # at most once/day and one model's alert never silences the others.
           AMAZON_IPHONE_COOLDOWN_HOURS: "24"
           AMAZON_IPHONE_MODELS: "15,16,17"
-          # iPhone 16 & 17: alert on 256 GB only (skip 128/512 GB / 1 TB). Format model:gb, comma/;-sep.
-          AMAZON_IPHONE_STORAGE: "17:256,16:256"
+          # iPhone 17: 256 GB only; iPhone 16: 128 GB only (skip other storages). Format model:gb, comma/;-sep.
+          AMAZON_IPHONE_STORAGE: "17:256,16:128"
           # Delivery pincode: Prime badge + delivery promise are location-specific. Only alert
           # when Amazon commits a delivery promise here (real stock), not a ghost "Only N left".
           AMAZON_IPHONE_PINCODE: "560035"
@@ -316,7 +316,7 @@ jobs:
           python check_bigbasket_iphone.py
         continue-on-error: true
 
-      - name: Check Croma iPhone 15/16/17 stock (560035, 560048)
+      - name: Check Croma iPhone 15/16 discount + 17 stock (560035, 560048)
         env:
           SENDER_EMAIL: ${{ secrets.SENDER_EMAIL }}
           RECEIVER_EMAIL: ${{ secrets.RECEIVER_EMAIL }}
@@ -324,6 +324,8 @@ jobs:
           NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
           CROMA_PINCODE: "560035,560048"
           CROMA_MODELS: "15,16,17"
+          # 15/16 alert only when discounted (price < MRP); 17 alerts on stock alone.
+          CROMA_DISCOUNT_MODELS: "15,16"
           CROMA_COOLDOWN_HOURS: "0.0333"  # 2 minutes
         run: |
           python check_croma_iphone.py

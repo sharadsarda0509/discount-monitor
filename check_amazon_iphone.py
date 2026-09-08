@@ -92,7 +92,7 @@ PINCODE = os.environ.get("AMAZON_IPHONE_PINCODE", "560035")
 REQUIRE_PRIME = os.environ.get("AMAZON_IPHONE_REQUIRE_PRIME", "true").strip().lower() not in ("0", "false", "no")
 
 # Per-model storage allow-list (GB): only alert on these storages for the given model; a model
-# not listed alerts on any storage. Default: iPhone 16 & 17 -> 256 GB only (skip 128/512 GB / 1 TB).
+# not listed alerts on any storage. Default: iPhone 17 -> 256 GB only, iPhone 16 -> 128 GB only.
 # Override via AMAZON_IPHONE_STORAGE="17:256,17:128;16:128" (model:gb, comma/semicolon-separated).
 def _parse_storage_cfg(raw: str) -> Dict[str, set]:
     cfg: Dict[str, set] = {}
@@ -106,7 +106,7 @@ def _parse_storage_cfg(raw: str) -> Dict[str, set]:
     return cfg
 
 
-STORAGE_ALLOWED = _parse_storage_cfg(os.environ.get("AMAZON_IPHONE_STORAGE", "17:256,16:256"))
+STORAGE_ALLOWED = _parse_storage_cfg(os.environ.get("AMAZON_IPHONE_STORAGE", "17:256,16:128"))
 
 # Cap discovered ASINs to keep Amazon request volume (and browser cost) sane.
 AMAZON_MAX = int(os.environ.get("AMAZON_IPHONE_MAX", 25))

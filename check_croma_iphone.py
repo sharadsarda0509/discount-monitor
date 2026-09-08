@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Croma -- iPhone 15 / 16 / 17 base handset stock monitor (pincode-serviceable).
+Croma -- iPhone 15 / 16 / 17 base handset monitor (pincode-serviceable).
 
 Croma (Tata) runs on a SAP-Commerce backend fronted by api.croma.com. Its search
 / product-listing APIs (/product/, /searchservices/) sit behind Akamai Bot Manager
@@ -22,8 +22,10 @@ new colour/SKU via the env var without code changes. The _is_handset name filter
 keeps this to base models only (no Pro / Plus / Air / mini / e).
 
 Alert condition: a watched base iPhone is serviceable (in stock) at the pincode via
-any fulfillment type. Pure stock alert -- no offer requirement (like the BigBasket
-and Blinkit iPhone monitors).
+any fulfillment type. iPhone 15/16 ADDITIONALLY require a real discount (selling price
+below MRP) -- an in-stock 15/16 at full MRP is logged but not alerted; iPhone 17 alerts
+on stock alone. The discount-gated models are per-model configurable via
+CROMA_DISCOUNT_MODELS (default "15,16").
 """
 
 import os
@@ -70,6 +72,9 @@ PINCODES = [p.strip() for p in os.environ.get("CROMA_PINCODE", "560035,560048").
 # Which iPhone number-series to watch (comma-separated). Sub-variants such as
 # "17 Pro", "16 Plus", "17e" are excluded automatically by _is_handset.
 MODELS = [m.strip() for m in os.environ.get("CROMA_MODELS", "15,16,17").split(",") if m.strip()]
+# Models that require a real discount (selling price < MRP) to alert; a watched model NOT
+# in this set alerts on stock alone. Default: 15/16 discount-gated, 17 stock-only.
+DISCOUNT_MODELS = {m.strip() for m in os.environ.get("CROMA_DISCOUNT_MODELS", "15,16").split(",") if m.strip()}
 
 # Watched product SKUs (comma-separated). Seeded with the base iPhone 15/16/17
 # colours Croma lists today; search is Akamai-gated so SKUs can't be discovered
@@ -129,6 +134,33 @@ def _is_handset(name: str) -> bool:
     pattern = (r"\bi[pP]hone\s*(" + "|".join(map(re.escape, MODELS)) +
                r")\b(?!\s*(?:plus|pro|max|air|mini))")
     return bool(re.search(pattern, name, re.I))
+
+
+def _model_num(name: str) -> Optional[str]:
+    """The iPhone number-series in a name ("Apple iPhone 16 (128GB, Teal)" -> "16")."""
+    m = re.search(r"i[pP]hone\s*(\d{1,2})", name or "")
+    return m.group(1) if m else None
+
+
+def _discount(product: Dict[str, Any]) -> Optional[Dict[str, float]]:
+    """{'amount','pct'} when selling price is below MRP, else None (missing data / full MRP)."""
+    try:
+        price = float(product.get("price"))
+        mrp = float(product.get("mrp"))
+    except (TypeError, ValueError):
+        return None
+    if mrp <= 0 or price <= 0 or price >= mrp:
+        return None
+    amt = mrp - price
+    return {"amount": amt, "pct": amt / mrp * 100}
+
+
+def _passes_gate(product: Dict[str, Any]) -> bool:
+    """Discount-gated models (DISCOUNT_MODELS, default 15/16) alert only when discounted;
+    every other watched model (e.g. 17) alerts on stock alone."""
+    if _model_num(product["name"]) in DISCOUNT_MODELS:
+        return _discount(product) is not None
+    return True
 
 
 def get_ist_now():
@@ -323,8 +355,10 @@ def _stock_lines(matches: List[Dict[str, Any]]) -> List[str]:
         price = ""
         if m.get("price"):
             price = f" -- Rs.{float(m['price']):.0f}"
-            if m.get("mrp") and m["mrp"] != m["price"]:
-                price += f" (MRP Rs.{float(m['mrp']):.0f})"
+            d = _discount(m)
+            if d:
+                price += (f" (MRP Rs.{float(m['mrp']):.0f}, "
+                          f"save Rs.{d['amount']:.0f} / {d['pct']:.0f}%)")
         lines.append(f"- {m['name']}{price}")
         lines.extend(_where_lines(m.get("fulfillments") or []))
         lines.append(f"    * {m['url']}")
@@ -400,7 +434,14 @@ def check_croma_iphone():
             print(f"[{get_ist_now()}] {product['name']:45.45}  out of stock")
             continue
         methods = sorted({f["method"] for f in info["fulfillments"] if f.get("method")})
-        print(f"[{get_ist_now()}] {info['name']:45.45}  IN STOCK ({', '.join(methods)})")
+        if not _passes_gate(info):
+            price = f"Rs.{float(info['price']):.0f}" if info.get("price") else "price n/a"
+            print(f"[{get_ist_now()}] {info['name']:45.45}  IN STOCK ({price} = full MRP) "
+                  f"-- skipping (discount-gated)")
+            continue
+        d = _discount(info)
+        tag = f"save Rs.{d['amount']:.0f} / {d['pct']:.0f}%" if d else "stock-only"
+        print(f"[{get_ist_now()}] {info['name']:45.45}  IN STOCK ({', '.join(methods)}) [{tag}]")
         matches.append(info)
 
     if not matches:
