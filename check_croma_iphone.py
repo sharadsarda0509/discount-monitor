@@ -22,10 +22,10 @@ new colour/SKU via the env var without code changes. The _is_handset name filter
 keeps this to base models only (no Pro / Plus / Air / mini / e).
 
 Alert condition: a watched base iPhone is serviceable (in stock) at the pincode via
-any fulfillment type. iPhone 15/16 ADDITIONALLY require a real discount (selling price
-below MRP) -- an in-stock 15/16 at full MRP is logged but not alerted; iPhone 17 alerts
-on stock alone. The discount-gated models are per-model configurable via
-CROMA_DISCOUNT_MODELS (default "15,16").
+any fulfillment type. By default no discount is required -- every watched model alerts
+on stock alone. Any models listed in CROMA_DISCOUNT_MODELS (default empty) ADDITIONALLY
+require a real discount (selling price below MRP); an in-stock but full-MRP unit of a
+gated model is logged but not alerted.
 """
 
 import os
@@ -73,8 +73,8 @@ PINCODES = [p.strip() for p in os.environ.get("CROMA_PINCODE", "560035,560048").
 # "17 Pro", "16 Plus", "17e" are excluded automatically by _is_handset.
 MODELS = [m.strip() for m in os.environ.get("CROMA_MODELS", "15,16,17").split(",") if m.strip()]
 # Models that require a real discount (selling price < MRP) to alert; a watched model NOT
-# in this set alerts on stock alone. Default: 15/16 discount-gated, 17 stock-only.
-DISCOUNT_MODELS = {m.strip() for m in os.environ.get("CROMA_DISCOUNT_MODELS", "15,16").split(",") if m.strip()}
+# in this set alerts on stock alone. Default empty: no discount gate, all models alert on stock.
+DISCOUNT_MODELS = {m.strip() for m in os.environ.get("CROMA_DISCOUNT_MODELS", "").split(",") if m.strip()}
 
 # Watched product SKUs (comma-separated). Seeded with the base iPhone 15/16/17
 # colours Croma lists today; search is Akamai-gated so SKUs can't be discovered

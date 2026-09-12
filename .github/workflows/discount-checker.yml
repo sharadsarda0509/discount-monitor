@@ -169,6 +169,7 @@ jobs:
         continue-on-error: true
 
       - name: Check Apple iPhone 17 same-day pickup (Saket + Noida / 110017)
+        if: false  # disabled per user request
         env:
           SENDER_EMAIL: ${{ secrets.SENDER_EMAIL }}
           RECEIVER_EMAIL: ${{ secrets.RECEIVER_EMAIL }}
@@ -316,7 +317,7 @@ jobs:
           python check_bigbasket_iphone.py
         continue-on-error: true
 
-      - name: Check Croma iPhone 15/16 discount + 17 stock (560035, 560048)
+      - name: Check Croma iPhone 15/16/17 stock (560035, 560048)
         env:
           SENDER_EMAIL: ${{ secrets.SENDER_EMAIL }}
           RECEIVER_EMAIL: ${{ secrets.RECEIVER_EMAIL }}
@@ -324,8 +325,8 @@ jobs:
           NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
           CROMA_PINCODE: "560035,560048"
           CROMA_MODELS: "15,16,17"
-          # 15/16 alert only when discounted (price < MRP); 17 alerts on stock alone.
-          CROMA_DISCOUNT_MODELS: "15,16"
+          # Empty = no discount gate; every watched model (15/16/17) alerts on stock alone.
+          CROMA_DISCOUNT_MODELS: ""
           CROMA_COOLDOWN_HOURS: "0.0333"  # 2 minutes
         run: |
           python check_croma_iphone.py
