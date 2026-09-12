@@ -274,7 +274,7 @@ jobs:
           NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
           RELIANCE_PINCODE: "560035"
           RELIANCE_MODELS: "15,16,17"
-          RELIANCE_COOLDOWN_HOURS: "12"
+          RELIANCE_COOLDOWN_HOURS: "0.0833"  # 5 minutes
         run: |
           python check_reliancedigital_iphone.py
         continue-on-error: true
