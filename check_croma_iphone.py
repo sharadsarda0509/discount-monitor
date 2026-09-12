@@ -8,18 +8,24 @@ and return 403 to any headless client -- so handsets CANNOT be discovered by sea
 from GitHub Actions. BUT two per-product endpoints are NOT bot-gated and answer a
 plain server request (curl_cffi Chrome impersonation, no auth token, no cookies):
 
-  1. Price/name : GET  /sku/v1/essentialcombo?pinCode=<pin>&ProductSkus=<sku>
-                  -> images.altText (name), price, mrp, url
-  2. Stock      : POST /inventory/oms/v2/tms/details-pwa/
-                  body asks 3 fulfillment types (HDEL home-delivery, STOR store
-                  pickup, SDEL same-day) for <itemID> at <zipCode>. A fulfilled
-                  line lands in promise.suggestedOption.option.promiseLines; an
-                  unfulfilled one in unavailableLines. Any promiseLine => in stock.
+  1. Price  : GET  /pricing-services/v2/price/national?itemIds=<sku>&pincode=<pin>
+              (header channel: EC) -> pricelist[].sellingPriceValue / mrpValue.
+              NOTE: the older /sku/v1/essentialcombo endpoint is being deprecated --
+              it still answers for iPhone 15 but returns [] for 16/17, so it is NOT
+              used for price. essentialcombo is kept only as a best-effort NAME
+              lookup for SKUs added via CROMA_PRODUCTS that aren't in the seed map.
+  2. Stock  : POST /inventory/oms/v2/tms/details-pwa/
+              body asks 3 fulfillment types (HDEL home-delivery, STOR store
+              pickup, SDEL same-day) for <itemID> at <zipCode>. A fulfilled
+              line lands in promise.suggestedOption.option.promiseLines; an
+              unfulfilled one in unavailableLines. Any promiseLine => in stock.
 
-Because search is gated, watched handsets are SEEDED as SKUs (CROMA_PRODUCTS),
-BigBasket-style, with the base iPhone 15/16/17 colours Croma lists today. Add a
-new colour/SKU via the env var without code changes. The _is_handset name filter
-keeps this to base models only (no Pro / Plus / Air / mini / e).
+Because search is gated, watched handsets are SEEDED (_PRODUCTS: SKU -> name + page
+path) with the base iPhone 15/16/17 colours Croma lists today -- pricing-services
+returns only a price, no name/URL, so those are carried in the seed. Override the
+whole set via CROMA_PRODUCTS (comma-separated SKUs); seeded SKUs keep their name,
+env-only SKUs fall back to an essentialcombo name lookup. The _is_handset name
+filter keeps this to base models only (no Pro / Plus / Air / mini / e).
 
 Alert condition: a watched base iPhone is serviceable (in stock) at the pincode via
 any fulfillment type. By default no discount is required -- every watched model alerts
@@ -76,20 +82,34 @@ MODELS = [m.strip() for m in os.environ.get("CROMA_MODELS", "15,16,17").split(",
 # in this set alerts on stock alone. Default empty: no discount gate, all models alert on stock.
 DISCOUNT_MODELS = {m.strip() for m in os.environ.get("CROMA_DISCOUNT_MODELS", "").split(",") if m.strip()}
 
-# Watched product SKUs (comma-separated). Seeded with the base iPhone 15/16/17
-# colours Croma lists today; search is Akamai-gated so SKUs can't be discovered
-# headlessly. Add a new colour/SKU via CROMA_PRODUCTS without code changes.
-_DEFAULT_PRODUCTS = (
-    # iPhone 15 (128GB): Black, Blue, Pink, Yellow, Green
-    "300652,300684,300679,300825,300665,"
-    # iPhone 16 (128GB): Black, White, Teal, Pink, Ultramarine
-    "309621,309692,309695,309693,309694,"
-    # iPhone 17 (256GB): Black, White, Mist Blue, Lavender, Sage
-    "317396,317398,317400,317401,317403"
-)
+# Watched products: SKU -> {name, path}. Seeded with the base iPhone 15/16/17 colours
+# Croma lists today; search is Akamai-gated so SKUs can't be discovered headlessly, and
+# pricing-services returns only a price (no name/URL), so both are carried here. Add a
+# colour by adding a line; override the whole watch-list via CROMA_PRODUCTS.
+_PRODUCTS: Dict[str, Dict[str, str]] = {
+    # iPhone 15 (128GB)
+    "300652": {"name": "Apple iPhone 15 (128GB, Black)",       "path": "/apple-iphone-15-128gb-black-/p/300652"},
+    "300684": {"name": "Apple iPhone 15 (128GB, Blue)",        "path": "/apple-iphone-15-128gb-blue-/p/300684"},
+    "300679": {"name": "Apple iPhone 15 (128GB, Pink)",        "path": "/apple-iphone-15-128gb-pink-/p/300679"},
+    "300825": {"name": "Apple iPhone 15 (128GB, Yellow)",      "path": "/apple-iphone-15-128gb-yellow-/p/300825"},
+    "300665": {"name": "Apple iPhone 15 (128GB, Green)",       "path": "/apple-iphone-15-128gb-green-/p/300665"},
+    # iPhone 16 (128GB)
+    "309621": {"name": "Apple iPhone 16 (128GB, Black)",       "path": "/apple-iphone-16-128gb-black-/p/309621"},
+    "309692": {"name": "Apple iPhone 16 (128GB, White)",       "path": "/apple-iphone-16-128gb-white-/p/309692"},
+    "309695": {"name": "Apple iPhone 16 (128GB, Teal)",        "path": "/apple-iphone-16-128gb-teal-/p/309695"},
+    "309693": {"name": "Apple iPhone 16 (128GB, Pink)",        "path": "/apple-iphone-16-128gb-pink-/p/309693"},
+    "309694": {"name": "Apple iPhone 16 (128GB, Ultramarine)", "path": "/apple-iphone-16-128gb-ultramarine-/p/309694"},
+    # iPhone 17 (256GB)
+    "317396": {"name": "Apple iPhone 17 (256GB, Black)",       "path": "/apple-iphone-17-256gb-black-/p/317396"},
+    "317398": {"name": "Apple iPhone 17 (256GB, White)",       "path": "/apple-iphone-17-256gb-white-/p/317398"},
+    "317400": {"name": "Apple iPhone 17 (256GB, Mist Blue)",   "path": "/apple-iphone-17-256gb-mist-blue-/p/317400"},
+    "317401": {"name": "Apple iPhone 17 (256GB, Lavender)",    "path": "/apple-iphone-17-256gb-lavender-/p/317401"},
+    "317403": {"name": "Apple iPhone 17 (256GB, Sage)",        "path": "/apple-iphone-17-256gb-sage-/p/317403"},
+}
 
 BASE = "https://api.croma.com"
 ESSENTIAL_URL = f"{BASE}/sku/v1/essentialcombo"
+PRICING_URL = f"{BASE}/pricing-services/v2/price/national"
 INVENTORY_URL = f"{BASE}/inventory/oms/v2/tms/details-pwa/"
 STORE_URL = f"{BASE}/lookup/mobile-app/v1/storelocation"
 PRODUCT_BASE_URL = "https://www.croma.com"
@@ -104,6 +124,9 @@ HEADERS = {
     "Accept": "application/json, text/plain, */*",
     "Origin": "https://www.croma.com",
     "Referer": "https://www.croma.com/",
+    # pricing-services rejects the request (400 "Invalid value for header 'channel'")
+    # without this; EC = the e-commerce channel the website uses.
+    "channel": "EC",
 }
 
 # Fulfillment types Croma checks, mapped to human labels for the alert.
@@ -202,8 +225,10 @@ def record_alert(alert_type: str):
 
 
 def _skus() -> List[str]:
-    raw = os.environ.get("CROMA_PRODUCTS", "").strip() or _DEFAULT_PRODUCTS
-    return [s.strip() for s in raw.split(",") if s.strip()]
+    raw = os.environ.get("CROMA_PRODUCTS", "").strip()
+    if raw:
+        return [s.strip() for s in raw.split(",") if s.strip()]
+    return list(_PRODUCTS)
 
 
 # Ship-node -> "Store name, City" resolver. The inventory API returns the fulfilling
@@ -242,31 +267,68 @@ def _resolve_node(node: Optional[str]) -> str:
     return _store_dir().get(node) or f"node {node}"
 
 
-def fetch_product(sku: str) -> Optional[Dict[str, Any]]:
-    """Name/price via essentialcombo. Returns None if not a watched base handset."""
+def _price(sku: str, pincode: str) -> Optional[Dict[str, float]]:
+    """{'price','mrp'} from pricing-services (needs channel: EC header), or None if the
+    SKU has no live price entry (delisted) or the call fails."""
+    try:
+        r = _get(PRICING_URL, params={"itemIds": sku, "pincode": pincode},
+                 headers=HEADERS, timeout=30)
+        r.raise_for_status()
+        pl = (r.json() or {}).get("pricelist") or []
+    except (requests.RequestException, ValueError) as e:
+        print(f"[{get_ist_now()}] pricing failed for {sku}: {e}")
+        return None
+    if not pl:
+        return None
+    row = pl[0]
+    try:
+        return {"price": float(row.get("sellingPriceValue")),
+                "mrp": float(row.get("mrpValue"))}
+    except (TypeError, ValueError):
+        return None
+
+
+def _essential_name(sku: str) -> Optional[str]:
+    """Best-effort product name from the legacy essentialcombo endpoint. Works for
+    iPhone 15; returns None for 16/17 (deprecated there). Used only for SKUs added via
+    CROMA_PRODUCTS that aren't in the seed map."""
     try:
         r = _get(ESSENTIAL_URL, params={"pinCode": PINCODES[0], "ProductSkus": sku},
                  headers=HEADERS, timeout=30)
         r.raise_for_status()
         data = r.json() or []
-    except (requests.RequestException, ValueError) as e:
-        print(f"[{get_ist_now()}] essentialcombo failed for {sku}: {e}")
+    except (requests.RequestException, ValueError):
         return None
     if not data:
-        print(f"[{get_ist_now()}] {sku}: no product data")
         return None
-    p = data[0]
-    name = ((p.get("images") or {}).get("altText") or "").strip()
-    if not _is_handset(name):
-        print(f"[{get_ist_now()}] {name or sku!r} is not a watched base handset -- skipping")
+    return ((data[0].get("images") or {}).get("altText") or "").strip() or None
+
+
+def fetch_product(sku: str) -> Optional[Dict[str, Any]]:
+    """Live price via pricing-services; name/URL from the seed map (essentialcombo name
+    fallback for env-only SKUs). Returns None if the SKU has no live price or isn't a
+    watched base handset."""
+    price = _price(sku, PINCODES[0])
+    if price is None:
+        print(f"[{get_ist_now()}] {sku}: no live price (delisted?) -- skipping")
         return None
-    path = p.get("url") or f"/p/{sku}"
+    meta = _PRODUCTS.get(sku)
+    name = meta["name"] if meta else _essential_name(sku)
+    # Apply the base-handset / model filter only when we have a real name (seed or
+    # essentialcombo). An env-only SKU with no resolvable name is trusted as seeded.
+    if name:
+        if not _is_handset(name):
+            print(f"[{get_ist_now()}] {name!r} is not a watched base handset -- skipping")
+            return None
+    else:
+        name = f"Apple iPhone (Croma SKU {sku})"
+    path = meta["path"] if meta else f"/p/{sku}"
     return {
         "sku": sku,
         "name": name,
-        "price": (p.get("price") or {}).get("value"),
-        "mrp": (p.get("mrp") or {}).get("value"),
-        "url": PRODUCT_BASE_URL + path if path.startswith("/") else path,
+        "price": price["price"],
+        "mrp": price["mrp"],
+        "url": PRODUCT_BASE_URL + path,
     }
 
 
