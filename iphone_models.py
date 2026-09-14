@@ -41,6 +41,28 @@ def is_base_handset(name: str, models: Iterable[str]) -> bool:
     return bool(re.search(pattern, name, re.I))
 
 
+def is_pro_handset(name: str, models: Iterable[str]) -> bool:
+    """True for an iPhone <n> Pro handset (the 6.3" Pro, NOT Pro Max) in `models`.
+
+    Companion to is_base_handset for the Pro line: matches "iPhone 18 Pro" but excludes
+    "Pro Max" (and Plus / Air / mini) and every accessory. Requires a storage token so
+    title-less listing chaff is dropped. Kept here so the base/Pro rules live together.
+    """
+    name = name or ""
+    if not re.search(r"\bi[pP]hone\b", name, re.I):
+        return False
+    if _ACCESSORY.search(name):
+        return False
+    if not re.search(r"\d+\s*(GB|TB)\b", name, re.I):
+        return False
+    mlist = [str(m).strip() for m in models if str(m).strip()]
+    if not mlist:
+        return False
+    pattern = (r"\bi[pP]hone\s*(" + "|".join(map(re.escape, mlist)) +
+               r")\s*pro\b(?!\s*max)")
+    return bool(re.search(pattern, name, re.I))
+
+
 def models_summary(names: Iterable[str]) -> str:
     """Distinct iPhone model numbers in first-seen order.
 

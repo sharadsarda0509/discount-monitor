@@ -31,6 +31,7 @@ jobs:
       BRIGHTDATA_BROWSER_WSS_7: ${{ secrets.BRIGHTDATA_BROWSER_WSS_7 }}
       BRIGHTDATA_BROWSER_WSS_8: ${{ secrets.BRIGHTDATA_BROWSER_WSS_8 }}
       BRIGHTDATA_BROWSER_WSS_9: ${{ secrets.BRIGHTDATA_BROWSER_WSS_9 }}
+      BRIGHTDATA_BROWSER_WSS_10: ${{ secrets.BRIGHTDATA_BROWSER_WSS_10 }}
 
     steps:
       - name: Checkout repository
@@ -125,6 +126,8 @@ jobs:
           # at most once/day and one model's alert never silences the others.
           AMAZON_IPHONE_COOLDOWN_HOURS: "24"
           AMAZON_IPHONE_MODELS: "15,16,17"
+          # Also watch the 6.3" iPhone 18 Pro (not Pro Max), any storage. Base handsets stay 15/16/17.
+          AMAZON_IPHONE_PRO_MODELS: "18"
           # iPhone 17: 256 GB only; iPhone 16: 128 GB only (skip other storages). Format model:gb, comma/;-sep.
           AMAZON_IPHONE_STORAGE: "17:256,16:128"
           # Delivery pincode: Prime badge + delivery promise are location-specific. Only alert

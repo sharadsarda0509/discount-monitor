@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 """
-Amazon.in -- iPhone 15 / 16 / 17 base-handset STOCK monitor.
+Amazon.in -- iPhone 15 / 16 / 17 base-handset (+ iPhone 18 Pro) STOCK monitor.
 
-Alerts when a base iPhone 15/16/17 (any storage/colour) is in stock on Amazon.in.
-Pro / Pro Max / Plus / Air / mini / 16e and all accessories are excluded -- the same
-"base handset only" rule the Blinkit/Croma/etc. monitors use (iphone_models.is_base_handset).
+Alerts when a base iPhone 15/16/17 (any storage/colour) is in stock on Amazon.in, plus
+the 6.3" iPhone 18 Pro (AMAZON_IPHONE_PRO_MODELS) -- the one Pro line we watch. Pro Max /
+Plus / Air / mini / 16e and all accessories are still excluded (iphone_models.is_base_handset
+for the base line, is_pro_handset for the Pro line).
 
 Optimised exactly like check_amazon.py (the gift-card monitor):
   * Discovery: pull base-handset ASINs from the search listing (one per model) each run,
@@ -53,7 +54,7 @@ except ImportError:
 
 import brightdata_browser
 import jina_reader
-from iphone_models import is_base_handset, models_summary
+from iphone_models import is_base_handset, is_pro_handset, models_summary
 
 IST = timezone(timedelta(hours=5, minutes=30))
 COOLDOWN_HOURS = float(os.environ.get(
@@ -64,20 +65,33 @@ NTFY_TOPIC = os.environ.get("NTFY_TOPIC", "")
 
 MODELS = [m.strip() for m in os.environ.get("AMAZON_IPHONE_MODELS", "15,16,17").split(",") if m.strip()]
 
+# Pro models to watch IN ADDITION to the base handsets -- the 6.3" iPhone <n> Pro (NOT the
+# 6.9" Pro Max). The base-handset rule excludes every Pro, so these are matched separately
+# via is_pro_handset. Default: iPhone 18 Pro. Override via AMAZON_IPHONE_PRO_MODELS.
+PRO_MODELS = [m.strip() for m in os.environ.get("AMAZON_IPHONE_PRO_MODELS", "18").split(",") if m.strip()]
+
+
+def _is_watched(title: str) -> bool:
+    """A base iPhone in MODELS, or an iPhone <n> Pro (6.3\", not Max) in PRO_MODELS."""
+    return is_base_handset(title, MODELS) or (bool(PRO_MODELS) and is_pro_handset(title, PRO_MODELS))
+
 # Base-handset ASINs always checked (unioned with discovery) so a known model is covered even
 # when the listing omits it that session -- the deals search is high-variance, often ranks
 # Pro/Air/sponsored above the base handsets, and sometimes returns a JS shell with no results.
 # Seeded with base iPhone 16 128GB + iPhone 17 256GB/512GB so 17 is checked on every scan
-# instead of only when discovery happens to surface it. Refresh when Amazon rotates these;
-# override via AMAZON_IPHONE_ASINS.
-_DEFAULT_ASINS = "B0DGJ7TGDR,B0DGHZWBYB,B0FQFYXCC4,B0FQFJ87HN,B0FQFLYV1S"
+# instead of only when discovery happens to surface it, plus the iPhone 18 Pro 6.3" colours
+# (Black/Burgundy/Glacier 256GB + Silver 1TB) since browser discovery can't surface Pro.
+# Refresh when Amazon rotates these; override via AMAZON_IPHONE_ASINS.
+_DEFAULT_ASINS = ("B0DGJ7TGDR,B0DGHZWBYB,B0FQFYXCC4,B0FQFJ87HN,B0FQFLYV1S,"
+                  "B0HJB7MQ97,B0HJ9W3ZND,B0HJB3HXRB,B0HJB5VFFX")
 ASINS = [a.strip() for a in os.environ.get("AMAZON_IPHONE_ASINS", _DEFAULT_ASINS).split(",") if a.strip()]
 
 # Search listing per model -- exactly where base handsets surface. Override the whole list
 # (semicolon-separated) via AMAZON_IPHONE_SEARCH_URLS.
 _SEARCH_TMPL = os.environ.get("AMAZON_IPHONE_SEARCH_TMPL", "https://www.amazon.in/s?k=apple+iphone+{m}")
 _SEARCH_URLS = [u.strip() for u in os.environ.get("AMAZON_IPHONE_SEARCH_URLS", "").split(";") if u.strip()] \
-    or [_SEARCH_TMPL.format(m=m) for m in MODELS]
+    or ([_SEARCH_TMPL.format(m=m) for m in MODELS]
+        + [_SEARCH_TMPL.format(m=f"{m}+pro") for m in PRO_MODELS])
 
 # Delivery pincode. Prime eligibility AND the delivery promise are location-dependent -- with
 # no location set Amazon renders neither (every item shows a "no delivery promise" block), so
@@ -279,7 +293,7 @@ def _extract_iphone_asins(html: str, max_n: int) -> List[str]:
         asin = div.get("data-asin", "")
         if not asin or asin in found:
             continue
-        if is_base_handset(_card_title(div), MODELS):
+        if _is_watched(_card_title(div)):
             found.append(asin)
         if len(found) >= max_n:
             break
@@ -396,8 +410,8 @@ def _parse_stock(asin: str, html: str) -> Optional[Dict[str, Any]]:
 
     title_m = re.search(r'id="productTitle"[^>]*>([^<]+)', html)
     title = _clean_title(title_m.group(1)) if title_m else ""
-    if not is_base_handset(title, MODELS):
-        return None  # Pro/Plus/Max/Air/mini/e, accessory, or unparseable title -> ignore
+    if not _is_watched(title):
+        return None  # not a watched base handset or watched Pro; Max/Plus/accessory -> ignore
 
     # Availability from the server-rendered #availability block (the reliable signal).
     avail_m = re.search(r'id="availability".*?<span[^>]*>\s*([^<]+?)\s*<', html, re.S)
@@ -405,7 +419,11 @@ def _parse_stock(asin: str, html: str) -> Optional[Dict[str, Any]]:
     al = avail.lower()
     has_buybox = ('id="add-to-cart-button"' in html) or ('id="buy-now-button"' in html) \
         or ('submit.add-to-cart' in html)
-    if "unavailable" in al or "out of stock" in al or "sold out" in al or "soon" in al:
+    # Pre-order ("This item will be released on <date>") is NOT stock -- it's buyable via a
+    # Pre-order button (has_buybox) but not actually available yet, which would otherwise
+    # fire a premature "in stock" alert on a launch (e.g. iPhone 18 Pro before its sale date).
+    is_preorder = "will be released" in al or "pre-order" in al or "available from" in al
+    if is_preorder or "unavailable" in al or "out of stock" in al or "sold out" in al or "soon" in al:
         in_stock = False
     elif "in stock" in al or "left in stock" in al or re.search(r"only\s+\d+\s+left", al):
         in_stock = True
