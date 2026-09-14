@@ -419,16 +419,16 @@ def _parse_stock(asin: str, html: str) -> Optional[Dict[str, Any]]:
     al = avail.lower()
     has_buybox = ('id="add-to-cart-button"' in html) or ('id="buy-now-button"' in html) \
         or ('submit.add-to-cart' in html)
-    # Pre-order ("This item will be released on <date>") is NOT stock -- it's buyable via a
-    # Pre-order button (has_buybox) but not actually available yet, which would otherwise
-    # fire a premature "in stock" alert on a launch (e.g. iPhone 18 Pro before its sale date).
-    is_preorder = "will be released" in al or "pre-order" in al or "available from" in al
-    if is_preorder or "unavailable" in al or "out of stock" in al or "sold out" in al or "soon" in al:
+    # A pre-order ("This item will be released on <date>") is a buyable state too -- it has a
+    # Pre-order buybox and an Amazon delivery promise, so it flows through as in stock like any
+    # other buyable listing (the alert's delivery date shows it's a launch). Only genuinely
+    # unavailable text blocks the alert.
+    if "unavailable" in al or "out of stock" in al or "sold out" in al or "soon" in al:
         in_stock = False
     elif "in stock" in al or "left in stock" in al or re.search(r"only\s+\d+\s+left", al):
         in_stock = True
     else:
-        in_stock = has_buybox  # no availability text -> fall back to the buybox
+        in_stock = has_buybox  # no/other availability text (incl. pre-order) -> use the buybox
 
     pay_m = (re.search(r'apex-pricetopay-value.*?a-price-whole"[^>]*>([0-9,]+)', html, re.S)
              or re.search(r'a-price-whole"[^>]*>([0-9,]+)', html))
