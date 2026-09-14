@@ -79,11 +79,11 @@ def _is_watched(title: str) -> bool:
 # when the listing omits it that session -- the deals search is high-variance, often ranks
 # Pro/Air/sponsored above the base handsets, and sometimes returns a JS shell with no results.
 # Seeded with base iPhone 16 128GB + iPhone 17 256GB/512GB so 17 is checked on every scan
-# instead of only when discovery happens to surface it, plus the iPhone 18 Pro 6.3" colours
-# (Black/Burgundy/Glacier 256GB + Silver 1TB) since browser discovery can't surface Pro.
-# Refresh when Amazon rotates these; override via AMAZON_IPHONE_ASINS.
+# instead of only when discovery happens to surface it, plus the iPhone 18 Pro 6.3" 256GB
+# colours (Black/Burgundy/Glacier) since browser discovery can't surface Pro. Silver 256GB
+# isn't listed yet (only 512GB+), so it's left to discovery. Override via AMAZON_IPHONE_ASINS.
 _DEFAULT_ASINS = ("B0DGJ7TGDR,B0DGHZWBYB,B0FQFYXCC4,B0FQFJ87HN,B0FQFLYV1S,"
-                  "B0HJB7MQ97,B0HJ9W3ZND,B0HJB3HXRB,B0HJB5VFFX")
+                  "B0HJB7MQ97,B0HJ9W3ZND,B0HJB3HXRB")
 ASINS = [a.strip() for a in os.environ.get("AMAZON_IPHONE_ASINS", _DEFAULT_ASINS).split(",") if a.strip()]
 
 # Search listing per model -- exactly where base handsets surface. Override the whole list
@@ -106,7 +106,7 @@ PINCODE = os.environ.get("AMAZON_IPHONE_PINCODE", "560035")
 REQUIRE_PRIME = os.environ.get("AMAZON_IPHONE_REQUIRE_PRIME", "true").strip().lower() not in ("0", "false", "no")
 
 # Per-model storage allow-list (GB): only alert on these storages for the given model; a model
-# not listed alerts on any storage. Default: iPhone 17 -> 256 GB only, iPhone 16 -> 128 GB only.
+# not listed alerts on any storage. Default: iPhone 17/18 Pro -> 256 GB only, iPhone 16 -> 128 GB only.
 # Override via AMAZON_IPHONE_STORAGE="17:256,17:128;16:128" (model:gb, comma/semicolon-separated).
 def _parse_storage_cfg(raw: str) -> Dict[str, set]:
     cfg: Dict[str, set] = {}
@@ -120,7 +120,7 @@ def _parse_storage_cfg(raw: str) -> Dict[str, set]:
     return cfg
 
 
-STORAGE_ALLOWED = _parse_storage_cfg(os.environ.get("AMAZON_IPHONE_STORAGE", "17:256,16:128"))
+STORAGE_ALLOWED = _parse_storage_cfg(os.environ.get("AMAZON_IPHONE_STORAGE", "17:256,16:128,18:256"))
 
 # Cap discovered ASINs to keep Amazon request volume (and browser cost) sane.
 AMAZON_MAX = int(os.environ.get("AMAZON_IPHONE_MAX", 25))

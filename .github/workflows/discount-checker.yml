@@ -129,8 +129,8 @@ jobs:
           AMAZON_IPHONE_MODELS: "15,16,17"
           # Also watch the 6.3" iPhone 18 Pro (not Pro Max), any storage. Base handsets stay 15/16/17.
           AMAZON_IPHONE_PRO_MODELS: "18"
-          # iPhone 17: 256 GB only; iPhone 16: 128 GB only (skip other storages). Format model:gb, comma/;-sep.
-          AMAZON_IPHONE_STORAGE: "17:256,16:128"
+          # iPhone 17/18 Pro: 256 GB only; iPhone 16: 128 GB only (skip other storages). Format model:gb, comma/;-sep.
+          AMAZON_IPHONE_STORAGE: "17:256,16:128,18:256"
           # Delivery pincode: Prime badge + delivery promise are location-specific. Only alert
           # when Amazon commits a delivery promise here (real stock), not a ghost "Only N left".
           AMAZON_IPHONE_PINCODE: "560035"
