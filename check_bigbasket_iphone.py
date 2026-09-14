@@ -13,7 +13,9 @@ Actions without any browser, cookie upload, or manual step:
 Flow per run:
   1. GET homepage  -> scrape the current Next.js buildId (changes each deploy)
   2. For each watched product (id + slug) -> GET the pd SSR json -> read availability
-     (avail_status "001" = in stock / "Add"; "000" = out of stock / "Notify Me")
+     (avail_status "001" = in stock / "Add"; "000" = out of stock / "Notify Me").
+     A not_for_sale flag can still be set on an avail_status "001" / "Add" item
+     (shown but not orderable at this location) -- that is treated as out of stock.
 
 Discovery: base iPhone 15/16/17 SKUs are discovered dynamically each run from BigBasket's
 listing service (search "iphone"). The listing service is Akamai-gated but returns JSON
@@ -27,6 +29,7 @@ import os
 import re
 import sys
 import json
+import time
 import base64
 import smtplib
 from email.mime.text import MIMEText
@@ -68,6 +71,13 @@ LON = str(os.environ.get("BIGBASKET_LON") or "77.6821069")
 PINCODE = os.environ.get("BIGBASKET_PINCODE", "560035").strip()
 
 MODELS = [m.strip() for m in os.environ.get("BIGBASKET_MODELS", "15,16,17").split(",") if m.strip()]
+
+# BigBasket rate-limits the _next/data pd endpoint (HTTP 429) on bursts. Retry each pd a
+# few times with exponential backoff, and space consecutive pd requests apart, so a
+# transient 429 doesn't drop a product from the scan. A 429 is NEVER read as in stock.
+PD_MAX_RETRIES = int(os.environ.get("BIGBASKET_PD_RETRIES", 3))
+PD_BACKOFF_SEC = float(os.environ.get("BIGBASKET_PD_BACKOFF_SEC", 2.0))
+PD_REQUEST_GAP_SEC = float(os.environ.get("BIGBASKET_PD_GAP_SEC", 1.5))
 
 # Manual seed / fallback watch list as "id:slug" (comma-separated), used when dynamic
 # discovery returns nothing. Kept current with the base iPhone SKUs BigBasket lists today;
@@ -238,15 +248,29 @@ def _find_product(node: Any, pid: str) -> Optional[Dict[str, Any]]:
 def check_product(build_id: str, pid: str, slug: str) -> Optional[Dict[str, Any]]:
     url = (f"https://www.bigbasket.com/_next/data/{build_id}/pd/{pid}/{slug}.json"
            f"?params={pid}&params={slug}")
-    try:
-        r = _get(url, headers={"User-Agent": UA, "x-channel": "BB-WEB", "accept": "*/*",
-                               "referer": HOME_URL}, cookies=_cookies(), timeout=30)
-        if r.status_code != 200:
-            print(f"[{get_ist_now()}] pd {pid} HTTP {r.status_code}")
+    headers = {"User-Agent": UA, "x-channel": "BB-WEB", "accept": "*/*", "referer": HOME_URL}
+    r = None
+    for attempt in range(PD_MAX_RETRIES + 1):
+        try:
+            r = _get(url, headers=headers, cookies=_cookies(), timeout=30)
+        except requests.RequestException as e:
+            print(f"[{get_ist_now()}] pd {pid} failed: {e}")
             return None
+        if r.status_code != 429:
+            break
+        if attempt < PD_MAX_RETRIES:
+            wait = PD_BACKOFF_SEC * (2 ** attempt)
+            print(f"[{get_ist_now()}] pd {pid} HTTP 429 -- backoff {wait:.0f}s "
+                  f"(retry {attempt + 1}/{PD_MAX_RETRIES})")
+            time.sleep(wait)
+
+    if r.status_code != 200:
+        print(f"[{get_ist_now()}] pd {pid} HTTP {r.status_code}")
+        return None
+    try:
         data = r.json()
-    except (requests.RequestException, ValueError) as e:
-        print(f"[{get_ist_now()}] pd {pid} failed: {e}")
+    except ValueError as e:
+        print(f"[{get_ist_now()}] pd {pid} bad json: {e}")
         return None
 
     p = _find_product(data, pid)
@@ -261,13 +285,19 @@ def check_product(build_id: str, pid: str, slug: str) -> Optional[Dict[str, Any]
 
     av = p.get("availability") or {}
     pricing = p.get("pricing") or {}
-    in_stock = str(av.get("avail_status")) == "001" and av.get("button") != "Notify Me"
+    # BigBasket sometimes returns avail_status "001" / button "Add" for an item flagged
+    # not_for_sale -- displayed at this location but not actually orderable. That combo
+    # produced false "in stock" alerts (e.g. iPhone 15 Blue), so not_for_sale gates it too.
+    in_stock = (str(av.get("avail_status")) == "001"
+                and av.get("button") != "Notify Me"
+                and not av.get("not_for_sale"))
     return {
         "id": pid,
         "name": name,
         "avail_status": av.get("avail_status"),
         "button": av.get("button"),
         "label": av.get("label"),
+        "not_for_sale": av.get("not_for_sale"),
         "sp": pricing.get("sp"),
         "mrp": pricing.get("mrp"),
         "url": "https://www.bigbasket.com" + (p.get("absolute_url") or f"/pd/{pid}/{slug}/"),
@@ -358,11 +388,17 @@ def check_bigbasket_iphone():
           f"watching {len(products)} total")
 
     in_stock = []
-    for pid, slug in products.items():
+    for i, (pid, slug) in enumerate(products.items()):
+        if i:
+            time.sleep(PD_REQUEST_GAP_SEC)  # space pd requests to avoid BigBasket 429s
         info = check_product(build_id, pid, slug)
         if not info:
             continue
-        status = "IN STOCK" if info["in_stock"] else f"out of stock ({info.get('label') or info.get('button')})"
+        if info["in_stock"]:
+            status = "IN STOCK"
+        else:
+            reason = "not for sale" if info.get("not_for_sale") else (info.get("label") or info.get("button"))
+            status = f"out of stock ({reason})"
         print(f"[{get_ist_now()}] {info['name']:40.40}  {status}")
         if info["in_stock"]:
             in_stock.append(info)
