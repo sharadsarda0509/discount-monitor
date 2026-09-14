@@ -191,6 +191,26 @@ jobs:
           python check_apple_iphone17.py
         continue-on-error: true
 
+      - name: Check Apple iPhone 18 Pro same-day pickup (Saket + Noida / 110017)
+        env:
+          SENDER_EMAIL: ${{ secrets.SENDER_EMAIL }}
+          RECEIVER_EMAIL: ${{ secrets.RECEIVER_EMAIL }}
+          EMAIL_PASSWORD: ${{ secrets.EMAIL_PASSWORD }}
+          NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
+          APPLE_PINCODE: "110017"
+          APPLE_STORE_IDS: "R756,R787"
+          # 2 min between alerts so a re-stock re-notifies quickly
+          APPLE_COOLDOWN_HOURS: "0.0333"
+          APPLE_SAME_DAY_ONLY: "true"
+          APPLE_REQUIRE_SAKET: "true"
+          # Same tight in-run poll loop as the iPhone 17 step: launch pickup stock at
+          # Saket/Noida appears and vanishes in minutes, so poll for 3 min per run.
+          APPLE_POLL_SECONDS: "180"
+          APPLE_POLL_INTERVAL: "45"
+        run: |
+          python check_apple_iphone18pro.py
+        continue-on-error: true
+
       - name: Check Vijay Sales iPhone 17 (256GB, all colours) stock + non-EMI card offer
         env:
           SENDER_EMAIL: ${{ secrets.SENDER_EMAIL }}
@@ -274,7 +294,7 @@ jobs:
           NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
           RELIANCE_PINCODE: "560035"
           RELIANCE_MODELS: "15,16,17"
-          RELIANCE_COOLDOWN_HOURS: "0.0833"  # 5 minutes
+          RELIANCE_COOLDOWN_HOURS: "0.0333"  # 2 minutes
         run: |
           python check_reliancedigital_iphone.py
         continue-on-error: true
