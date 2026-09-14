@@ -344,7 +344,7 @@ jobs:
           EMAIL_PASSWORD: ${{ secrets.EMAIL_PASSWORD }}
           NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
           BIGBASKET_MODELS: "15,16,17"
-          BIGBASKET_COOLDOWN_HOURS: "12"
+          BIGBASKET_COOLDOWN_HOURS: "0.0333"  # 2 minutes
           BIGBASKET_LAT: ${{ secrets.BIGBASKET_LAT }}
           BIGBASKET_LON: ${{ secrets.BIGBASKET_LON }}
         run: |
