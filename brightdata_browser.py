@@ -165,17 +165,24 @@ def browser_fetch(origin: str, calls: List[Dict[str, Any]],
     # (its own IPs, no residential proxy / Bright Data credits). Scoped to amazon origins
     # only -- Blinkit/Zepto 403 through Jina, so they keep using Bright Data below.
     # Fallback chain: Jina (with in-request CAPTCHA/429 retry) -> Bright Data residential
-    # browser for any calls Jina still can't return a clean page for.
+    # browser for any calls Jina still can't return a clean page for. Set
+    # AMAZON_JINA_BD_FALLBACK=0 to disable that BD fallback for Amazon entirely, so a Jina
+    # failure just leaves the call unfetched (retried next scan) instead of burning BD
+    # credits -- lets you scan Amazon more frequently without ever hitting Bright Data.
     if jina_reader.is_enabled() and "amazon." in (origin or ""):
         results = jina_reader.fetch(calls)
         failed = [i for i, r in enumerate(results) if not _clean(r)]
-        if failed and _wss_urls():
+        bd_fallback = os.environ.get("AMAZON_JINA_BD_FALLBACK", "1").strip().lower() not in ("0", "false", "no")
+        if failed and bd_fallback and _wss_urls():
             print(f"[brightdata_browser] Jina left {len(failed)}/{len(calls)} amazon "
                   f"call(s) CAPTCHA/failed -> Bright Data fallback")
             sub = _cdp_fetch([calls[i] for i in failed], origin, timeout_ms, settle_ms, wait_cookie) or []
             for j, i in enumerate(failed):
                 if j < len(sub) and _clean(sub[j]):
                     results[i] = sub[j]
+        elif failed and not bd_fallback:
+            print(f"[brightdata_browser] Jina left {len(failed)}/{len(calls)} amazon "
+                  f"call(s) CAPTCHA/failed -> BD fallback disabled; leaving unfetched")
         return results
 
     return _cdp_fetch(calls, origin, timeout_ms, settle_ms, wait_cookie)

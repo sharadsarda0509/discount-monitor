@@ -115,6 +115,9 @@ jobs:
           # waited ~15 min (e.g. a 2% Amazon Pay card seen ~15 min late). Discovery still every 4h.
           AMAZON_RUN_INTERVAL_MIN: "0"
           AMAZON_DISCOVERY_INTERVAL_MIN: "240"
+          # Jina only -- never fall back to Bright Data for Amazon, so frequent scans can't
+          # burn BD credits (a Jina-CAPTCHA'd call is just retried next scan).
+          AMAZON_JINA_BD_FALLBACK: "0"
         run: |
           python check_amazon.py
         continue-on-error: true
@@ -151,9 +154,14 @@ jobs:
           # only if you need strict 560035 accuracy.
           AMAZON_USE_JINA: "1"
           JINA_CONCURRENCY: "2"
-          # Keyless Jina (free, ~20 req/min) -> scan every 10 min. Discovery still only every 4h.
-          AMAZON_IPHONE_RUN_INTERVAL_MIN: "10"
+          # Free via Jina -> scan every dispatch (~5 min). A 10-min throttle + 5-min dispatch
+          # + jitter gave a ~15-min cadence, delaying detection (matters for the iPhone 18 Pro
+          # launch). Discovery still only every 4h.
+          AMAZON_IPHONE_RUN_INTERVAL_MIN: "0"
           AMAZON_IPHONE_DISCOVERY_INTERVAL_MIN: "240"
+          # Jina only -- never fall back to Bright Data for Amazon, so frequent scans can't
+          # burn BD credits (a Jina-CAPTCHA'd call is just retried next scan).
+          AMAZON_JINA_BD_FALLBACK: "0"
         run: |
           python check_amazon_iphone.py
         continue-on-error: true
