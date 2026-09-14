@@ -110,8 +110,10 @@ jobs:
           # jina_reader retries on 429 and falls back to keyless on 402.
           AMAZON_USE_JINA: "1"
           JINA_CONCURRENCY: "2"
-          # Free -> scan every 10 min (was 60). Discovery listing still only every 4h.
-          AMAZON_RUN_INTERVAL_MIN: "10"
+          # Free via Jina -> scan every dispatch (~5 min). A 10-min throttle + 5-min dispatch
+          # + run jitter actually yielded a ~15-min cadence, so a deal landing just after a scan
+          # waited ~15 min (e.g. a 2% Amazon Pay card seen ~15 min late). Discovery still every 4h.
+          AMAZON_RUN_INTERVAL_MIN: "0"
           AMAZON_DISCOVERY_INTERVAL_MIN: "240"
         run: |
           python check_amazon.py
