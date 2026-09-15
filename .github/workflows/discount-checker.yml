@@ -52,11 +52,6 @@ jobs:
           pip install -r requirements.txt
         continue-on-error: true
 
-      - name: Install Playwright Chromium (for the Flipkart pincode monitor)
-        run: |
-          python -m playwright install --with-deps chromium
-        continue-on-error: true
-
       - name: Restore alert state cache
         uses: actions/cache@v4
         with:
@@ -371,30 +366,30 @@ jobs:
           python check_croma_iphone.py
         continue-on-error: true
 
-      - name: Check Flipkart iPhone 15/16/17 + 18 Pro stock (5 pincodes)
-        if: false  # disabled — a guest browser can't see Flipkart's logged-in checkout-only
-                   # "item not available for purchase" state, so listings that pass the guest
-                   # buybox (Buy Now + delivery promise) but fail at checkout would false-alert.
-                   # Re-enable once a logged-in session (checkout-level check) is wired in.
+      - name: Check Flipkart iPhone stock (15 128GB, 17 256GB) per pincode -- rome API, browserless
         env:
           SENDER_EMAIL: ${{ secrets.SENDER_EMAIL }}
           RECEIVER_EMAIL: ${{ secrets.RECEIVER_EMAIL }}
           EMAIL_PASSWORD: ${{ secrets.EMAIL_PASSWORD }}
           NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
-          # Temporarily scoped to iPhone 17 (256 GB) only, at pincode 201019 only.
-          FLIPKART_MODELS: "17"
+          # iPhone 15 (128 GB only) + iPhone 17 (256 GB only).
+          FLIPKART_MODELS: "15,17"
           FLIPKART_PRO_MODELS: ""
-          FLIPKART_STORAGE: "17:256"
-          # Alert only when actually BUYABLE (deliverable) at ANY of these; the alert names
-          # which. Real per-pincode serviceability needs a browser (Akamai-gated), so this uses
-          # headless Playwright Chromium on the runner -- NOT Bright Data. Pincode coords are
-          # built into the script (override via FLIPKART_PINCODE_COORDS).
-          FLIPKART_PINCODES: "201019"
+          FLIPKART_STORAGE: "15:128,17:256"
+          # Alert only when BUYABLE (serviceable + available) at ANY of these; the alert names which.
+          # Per-pincode serviceability comes from Flipkart's internal rome API (flipkart_rome.py):
+          # POST /api/4/location/update to bind the pincode, then /api/4/page/fetch. No browser.
+          # NOTE: rome reflects the ANONYMOUS view -- a listing can read buyable here yet fail at the
+          # logged-in Buy Now step ("not available"); that appears account/checkout-specific.
+          FLIPKART_PINCODES: "201019,560035"
           FLIPKART_MAX: "12"
-          # Scoped to 1 model x 1 pincode (~20s), so run every dispatch (~5 min). Raise this
-          # back to ~15 if you widen it to all models/pincodes (then it's a ~3 min browser check).
+          # A few JSON calls per pincode, so run every dispatch (~5 min).
           FLIPKART_RUN_INTERVAL_MIN: "0"
-          FLIPKART_IPHONE_COOLDOWN_HOURS: "0.0333"  # 2 minutes, per-variant
+          # Per-variant cooldown. 2h re-notifies a real restock without spamming on the known
+          # anonymous-view false positive.
+          FLIPKART_IPHONE_COOLDOWN_HOURS: "2"
+          # Optional residential proxy if the runner's datacenter IP gets PerimeterX-gated:
+          # FLIPKART_PROXY: ${{ secrets.FLIPKART_PROXY }}
         run: |
           python check_flipkart_iphone.py
         continue-on-error: true

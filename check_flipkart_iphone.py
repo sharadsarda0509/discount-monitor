@@ -1,24 +1,24 @@
 #!/usr/bin/env python3
-"""
-Flipkart -- iPhone 15/16/17 base handset (+ iPhone 18 Pro) STOCK monitor (per pincode).
+"""Flipkart -- iPhone 15/16/17 base handset (+ iPhone 18 Pro) STOCK monitor (per pincode).
 
-WHY A BROWSER: Flipkart's search `displayState` and its page-API `isAvailable` are only
-NATIONAL catalog flags -- an iPhone 17 shows "in stock" nationally yet is "Not deliverable
-at your location" (you can't actually buy it). The real, per-pincode buyability only
-resolves once a delivery location is set in a session, and BOTH the location-set API
-(4/user/state) and the located page fetch are Akamai-protected -> a plain curl gets HTTP
-406. A real browser passes Akamai and holds the location, so this uses headless Playwright
-Chromium (free on the GitHub Actions runner -- NOT Bright Data; BD is only for IP-gated
-sites, and Flipkart doesn't gate the datacenter IP).
+BROWSERLESS via Flipkart's internal `rome` API (see flipkart_rome.py). Earlier versions drove
+headless Playwright to set a delivery location by geolocation and read the rendered buybox
+(~2-3 min/run, one Chromium context per product). Flipkart's SPA gets the same per-pincode
+serviceability from a JSON API, so we skip the browser entirely:
 
 FLOW:
-  1. Discovery (fast, curl): GET /search?q=apple+iphone+<m> -> product paths; the slug
+  1. Discovery (curl): GET /search?q=apple+iphone+<m> -> product paths; the slug
      ("apple-iphone-17-mist-blue-256-gb") carries model+storage, filtered to watched base
-     handsets (is_base_handset) + the 6.3" iPhone 18 Pro (is_pro_handset).
-  2. Stock (Playwright): for each pincode, open a context whose geolocation is that pincode's
-     coords, set the delivery location via "Use my current location", then open each product
-     page and read the RENDERED buybox: buyable = "Buy Now"/"Add to Cart" AND not
-     "Not deliverable"/"Sold Out"/"Notify Me". A product alerts if buyable at ANY pincode.
+     handsets (is_base_handset) + the 6.3" iPhone 18 Pro (is_pro_handset) and to STORAGE_ALLOWED.
+  2. Stock (rome, flipkart_rome.check_all_rome): for each pincode, bind it to a session via
+     POST /api/4/location/update, then POST /api/4/page/fetch per product and read
+     pageContext...psi.pls -> BUYABLE == serviceable AND isAvailable AND no unserviceabilityReason.
+     A product alerts if buyable at ANY pincode.
+
+KNOWN LIMITATION: the rome serviceability (like the guest buybox before it) reflects the
+ANONYMOUS view. A listing can read serviceable=True here yet fail at the logged-in Buy Now
+step with "not available for purchase" (that state appears to be account/checkout-specific).
+Eliminating that fully needs a logged-in add-to-cart/checkout probe; not wired in yet.
 """
 
 import os
@@ -30,9 +30,10 @@ from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 
 from iphone_models import is_base_handset, is_pro_handset, models_summary
+from flipkart_rome import check_all_rome
 
 try:
     from curl_cffi import requests as cffi_requests
@@ -63,38 +64,9 @@ PRO_MODELS = [m.strip() for m in os.environ.get("FLIPKART_PRO_MODELS", "18").spl
 PINCODES = [p.strip() for p in os.environ.get(
     "FLIPKART_PINCODES", "560035,560048,560103,201019,201010").split(",") if p.strip()]
 
-# pincode -> (lat, lon) for the browser geolocation used to set the delivery location.
-# Override via FLIPKART_PINCODE_COORDS="560035:12.9,77.68;201019:28.6,77.3".
-_DEFAULT_COORDS: Dict[str, Tuple[float, float]] = {
-    "560035": (12.8960214, 77.6998193),
-    "560048": (12.9901300, 77.7119196),
-    "560103": (12.9232768, 77.6788682),
-    "201019": (28.6478435, 77.3475421),
-    "201010": (28.6493627, 77.3562009),
-}
-
-
-def _parse_coords(raw: str) -> Dict[str, Tuple[float, float]]:
-    out: Dict[str, Tuple[float, float]] = {}
-    for part in re.split(r"[;]", raw or ""):
-        part = part.strip()
-        if ":" not in part:
-            continue
-        pin, ll = part.split(":", 1)
-        try:
-            lat, lon = (float(x) for x in ll.split(","))
-            out[pin.strip()] = (lat, lon)
-        except ValueError:
-            continue
-    return out
-
-
-COORDS = {**_DEFAULT_COORDS, **_parse_coords(os.environ.get("FLIPKART_PINCODE_COORDS", ""))}
-
 MAX_PRODUCTS = int(os.environ.get("FLIPKART_MAX", 12))
-NAV_TIMEOUT_MS = int(os.environ.get("FLIPKART_NAV_TIMEOUT_MS", 45000))
-# This is a browser check (~2-3 min for all pincodes), so it runs at most once per this many
-# minutes even though the workflow fires every 5 -- avoids stacking runs. 0 = every run.
+# This is a network check (a few JSON calls per pincode), so it can run every dispatch. Set
+# FLIPKART_RUN_INTERVAL_MIN > 0 to throttle if you widen it to many models/pincodes. 0 = every run.
 RUN_INTERVAL_MIN = float(os.environ.get("FLIPKART_RUN_INTERVAL_MIN", 0))
 
 
@@ -244,149 +216,6 @@ def discover_products() -> List[Dict[str, str]]:
     return list(found.values())
 
 
-# ---- Playwright stock check --------------------------------------------------
-
-def discover_in_browser(page) -> List[Dict[str, str]]:
-    """Fallback discovery when the curl search is blocked: load each search page in the
-    browser (passes Akamai) and pull watched product links from the rendered DOM."""
-    from urllib.parse import quote
-    found: Dict[str, Dict[str, str]] = {}
-    for q in _search_queries():
-        try:
-            page.goto(f"{SEARCH_URL}?q={quote(q)}", wait_until="domcontentloaded", timeout=NAV_TIMEOUT_MS)
-            page.wait_for_timeout(1500)
-            hrefs = page.eval_on_selector_all(
-                'a[href*="/p/itm"]', "els => els.map(e => e.getAttribute('href'))")
-        except Exception as e:
-            print(f"[{get_ist_now()}] browser search {q!r} failed: {str(e)[:60]}")
-            continue
-        for h in hrefs or []:
-            m = re.search(r"/([a-z0-9-]+)/p/(itm[0-9a-f]+)\?pid=([A-Z0-9]+)", h or "")
-            if not m or m.group(3) in found:
-                continue
-            name = _name_from_slug(m.group(1))
-            if not _is_watched(name) or not _storage_ok(name):
-                continue
-            found[m.group(3)] = {"pid": m.group(3),
-                                 "url": f"{BASE}/{m.group(1)}/p/{m.group(2)}?pid={m.group(3)}",
-                                 "name": name}
-    return list(found.values())
-
-
-_BLOCKED = ("not deliverable", "delivery unavailable", "sold out", "notify me",
-            "currently unavailable", "coming soon")
-_PROMISE = ("delivery by", "get it by", "delivery in")
-
-
-def _read_buybox(page) -> Dict[str, Any]:
-    """Buyable only when the buybox has resolved to a real delivery PROMISE ("Delivery by
-    <date>") for the set pincode AND offers Buy Now/Add to Cart AND shows no blocked state.
-    Requiring the promise avoids the unresolved/blank buybox reading as buyable (a plain
-    'Add to Cart' can render before serviceability resolves)."""
-    import time
-    low = ""
-    deadline = time.time() + 8
-    while time.time() < deadline:
-        low = page.inner_text("body").lower()
-        if any(s in low for s in _BLOCKED) or any(s in low for s in _PROMISE):
-            break  # status resolved
-        page.wait_for_timeout(500)
-    body = page.inner_text("body")
-    price = None
-    pm = re.search(r"₹\s?([0-9,]{4,})", body)
-    if pm:
-        try:
-            price = int(pm.group(1).replace(",", ""))
-        except ValueError:
-            pass
-    blocked = any(s in low for s in _BLOCKED)
-    has_promise = any(s in low for s in _PROMISE)
-    can_buy = ("buy now" in low) or ("add to cart" in low)
-    return {"buyable": can_buy and has_promise and not blocked, "price": price}
-
-
-def _set_location(page, pincode: str) -> bool:
-    """Set Flipkart's delivery location to `pincode` via 'Use my current location' (the
-    context's geolocation is that pincode's coords). Idempotent-ish; safe to call per page."""
-    import re as _re
-    try:
-        loc = page.get_by_text(_re.compile(r"^(Select delivery location|Enter (delivery )?pincode)$", _re.I))
-        if loc.count() == 0:
-            return True  # location already set for this context
-        loc.first.click(timeout=8000)
-        page.wait_for_timeout(1200)
-        page.get_by_text(_re.compile("Use my current location", _re.I)).first.click(timeout=6000)
-        page.wait_for_timeout(3500)
-        return True
-    except Exception as e:
-        print(f"[{get_ist_now()}] {pincode}: set-location failed: {str(e)[:70]}")
-        return False
-
-
-def check_all(products: List[Dict[str, str]]) -> List[Dict[str, Any]]:
-    """For each pincode, set the browser location and read each product's real buybox.
-    Returns products (with title/price/available_pincodes/in_stock) that are buyable somewhere."""
-    from playwright.sync_api import sync_playwright
-
-    watch = products[:MAX_PRODUCTS]
-    by_pid: Dict[str, Dict[str, Any]] = {
-        p["pid"]: {**p, "title": p["name"], "price": None, "available_pincodes": []} for p in watch}
-
-    with sync_playwright() as pw:
-        browser = pw.chromium.launch(headless=True)
-        try:
-            if not watch:  # curl discovery was blocked -> discover in the browser
-                dctx = browser.new_context(locale="en-IN", viewport={"width": 1366, "height": 900},
-                                           user_agent=UA)
-                dctx.set_default_timeout(NAV_TIMEOUT_MS)
-                dpage = dctx.new_page()
-                watch = discover_in_browser(dpage)[:MAX_PRODUCTS]
-                dctx.close()
-                print(f"[{get_ist_now()}] browser-discovered {len(watch)} watched product(s)")
-                by_pid = {p["pid"]: {**p, "title": p["name"], "price": None,
-                                     "available_pincodes": []} for p in watch}
-            for pincode in PINCODES:
-                coords = COORDS.get(pincode)
-                if not coords:
-                    print(f"[{get_ist_now()}] {pincode}: no coords configured -- skipping")
-                    continue
-                for p in watch:
-                    # Fresh context per product: the location must be set on THAT product's own
-                    # page ("Select delivery location" present) for its serviceability to
-                    # resolve -- navigating with a persisted location leaves the buybox
-                    # unresolved (reads as neither deliverable nor blocked).
-                    ctx = browser.new_context(
-                        locale="en-IN", viewport={"width": 1366, "height": 900}, user_agent=UA,
-                        geolocation={"latitude": coords[0], "longitude": coords[1]},
-                        permissions=["geolocation"])
-                    ctx.set_default_timeout(NAV_TIMEOUT_MS)
-                    page = ctx.new_page()
-                    info = None
-                    try:
-                        page.goto(p["url"], wait_until="domcontentloaded", timeout=NAV_TIMEOUT_MS)
-                        page.wait_for_timeout(1500)
-                        _set_location(page, pincode)
-                        info = _read_buybox(page)
-                    except Exception as e:
-                        print(f"[{get_ist_now()}] {pincode} {p['pid']}: {str(e)[:60]}")
-                    finally:
-                        ctx.close()
-                    if not info:
-                        continue
-                    if info["price"]:
-                        by_pid[p["pid"]]["price"] = info["price"]
-                    if info["buyable"]:
-                        by_pid[p["pid"]]["available_pincodes"].append(pincode)
-        finally:
-            browser.close()
-
-    out = []
-    for rec in by_pid.values():
-        rec["in_stock"] = bool(rec["available_pincodes"])
-        out.append(rec)
-    return out
-
-
 def _stock_lines(items: List[Dict[str, Any]]) -> List[str]:
     lines = []
     for p in items:
@@ -446,7 +275,7 @@ def send_alert(items: List[Dict[str, Any]]) -> bool:
 
 def check_flipkart_iphone():
     print("=" * 60)
-    print(f"Flipkart iPhone monitor -- {get_ist_now()}")
+    print(f"Flipkart iPhone monitor (rome API) -- {get_ist_now()}")
     print(f"Models: {', '.join(MODELS)}   Pro: {', '.join(PRO_MODELS) or '-'}   "
           f"Pincodes: {', '.join(PINCODES)}")
     print("=" * 60)
@@ -456,9 +285,10 @@ def check_flipkart_iphone():
     _stamp_run()
 
     products = discover_products()
-    print(f"[{get_ist_now()}] curl-discovered {len(products)} watched product(s); checking up to {MAX_PRODUCTS}")
+    print(f"[{get_ist_now()}] discovered {len(products)} watched product(s); checking up to {MAX_PRODUCTS}")
 
-    results = check_all(products)
+    results = check_all_rome(products, PINCODES, MAX_PRODUCTS,
+                             log=lambda m: print(f"[{get_ist_now()}]{m}"))
     if not results:
         print(f"[{get_ist_now()}] No watched iPhone products found.")
         return False
@@ -467,7 +297,8 @@ def check_flipkart_iphone():
             price = f"Rs.{r['price']}" if r.get("price") else "price n/a"
             print(f"[{get_ist_now()}] {r['title']:40.40}  BUYABLE  {price:12.12}  @ {'/'.join(r['available_pincodes'])}")
         else:
-            print(f"[{get_ist_now()}] {r['title']:40.40}  not deliverable / OOS at all pincodes")
+            price = f"Rs.{r['price']}" if r.get("price") else "price n/a"
+            print(f"[{get_ist_now()}] {r['title']:40.40}  not deliverable / OOS  {price:12.12}")
 
     in_stock = [r for r in results if r["in_stock"]]
     if not in_stock:
