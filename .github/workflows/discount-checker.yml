@@ -366,6 +366,24 @@ jobs:
           python check_croma_iphone.py
         continue-on-error: true
 
+      - name: Check Flipkart iPhone 15/16/17 + 18 Pro stock (5 pincodes)
+        env:
+          SENDER_EMAIL: ${{ secrets.SENDER_EMAIL }}
+          RECEIVER_EMAIL: ${{ secrets.RECEIVER_EMAIL }}
+          EMAIL_PASSWORD: ${{ secrets.EMAIL_PASSWORD }}
+          NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
+          FLIPKART_MODELS: "15,16,17"
+          FLIPKART_PRO_MODELS: "18"
+          # iPhone 15/16 -> 128 GB only; iPhone 17 & 18 Pro -> 256 GB only (skip other storages).
+          FLIPKART_STORAGE: "15:128,16:128,17:256,18:256"
+          # Alert if available at ANY of these; the alert names which. Availability is
+          # pincode-specific via Flipkart's rome page API (no Bright Data / browser / Jina).
+          FLIPKART_PINCODES: "560035,560048,560103,201019,201010"
+          FLIPKART_IPHONE_COOLDOWN_HOURS: "0.0333"  # 2 minutes, per-variant
+        run: |
+          python check_flipkart_iphone.py
+        continue-on-error: true
+
       - name: Check JioMart iPhone discount (15/16/17 — non-EMI bank offer or base discount)
         if: false  # temporarily disabled
         env:
