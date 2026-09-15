@@ -377,19 +377,19 @@ jobs:
           RECEIVER_EMAIL: ${{ secrets.RECEIVER_EMAIL }}
           EMAIL_PASSWORD: ${{ secrets.EMAIL_PASSWORD }}
           NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
-          FLIPKART_MODELS: "15,16,17"
-          FLIPKART_PRO_MODELS: "18"
-          # iPhone 15/16 -> 128 GB only; iPhone 17 & 18 Pro -> 256 GB only (skip other storages).
-          FLIPKART_STORAGE: "15:128,16:128,17:256,18:256"
+          # Temporarily scoped to iPhone 17 (256 GB) only, at pincode 201019 only.
+          FLIPKART_MODELS: "17"
+          FLIPKART_PRO_MODELS: ""
+          FLIPKART_STORAGE: "17:256"
           # Alert only when actually BUYABLE (deliverable) at ANY of these; the alert names
           # which. Real per-pincode serviceability needs a browser (Akamai-gated), so this uses
           # headless Playwright Chromium on the runner -- NOT Bright Data. Pincode coords are
           # built into the script (override via FLIPKART_PINCODE_COORDS).
-          FLIPKART_PINCODES: "560035,560048,560103,201019,201010"
+          FLIPKART_PINCODES: "201019"
           FLIPKART_MAX: "12"
-          # Browser check (~2-3 min for all pincodes) -> run at most every 15 min even though
-          # the workflow fires every 5, so runs don't stack.
-          FLIPKART_RUN_INTERVAL_MIN: "15"
+          # Scoped to 1 model x 1 pincode (~20s), so run every dispatch (~5 min). Raise this
+          # back to ~15 if you widen it to all models/pincodes (then it's a ~3 min browser check).
+          FLIPKART_RUN_INTERVAL_MIN: "0"
           FLIPKART_IPHONE_COOLDOWN_HOURS: "0.0333"  # 2 minutes, per-variant
         run: |
           python check_flipkart_iphone.py
