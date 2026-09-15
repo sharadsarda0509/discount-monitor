@@ -273,9 +273,25 @@ def discover_in_browser(page) -> List[Dict[str, str]]:
     return list(found.values())
 
 
+_BLOCKED = ("not deliverable", "delivery unavailable", "sold out", "notify me",
+            "currently unavailable", "coming soon")
+_PROMISE = ("delivery by", "get it by", "delivery in")
+
+
 def _read_buybox(page) -> Dict[str, Any]:
+    """Buyable only when the buybox has resolved to a real delivery PROMISE ("Delivery by
+    <date>") for the set pincode AND offers Buy Now/Add to Cart AND shows no blocked state.
+    Requiring the promise avoids the unresolved/blank buybox reading as buyable (a plain
+    'Add to Cart' can render before serviceability resolves)."""
+    import time
+    low = ""
+    deadline = time.time() + 8
+    while time.time() < deadline:
+        low = page.inner_text("body").lower()
+        if any(s in low for s in _BLOCKED) or any(s in low for s in _PROMISE):
+            break  # status resolved
+        page.wait_for_timeout(500)
     body = page.inner_text("body")
-    low = body.lower()
     price = None
     pm = re.search(r"₹\s?([0-9,]{4,})", body)
     if pm:
@@ -283,11 +299,10 @@ def _read_buybox(page) -> Dict[str, Any]:
             price = int(pm.group(1).replace(",", ""))
         except ValueError:
             pass
-    buy = ("buy now" in low) or ("add to cart" in low)
-    blocked = ("not deliverable" in low or "delivery unavailable" in low
-               or "sold out" in low or "notify me" in low or "currently unavailable" in low
-               or "coming soon" in low)
-    return {"buyable": buy and not blocked, "price": price}
+    blocked = any(s in low for s in _BLOCKED)
+    has_promise = any(s in low for s in _PROMISE)
+    can_buy = ("buy now" in low) or ("add to cart" in low)
+    return {"buyable": can_buy and has_promise and not blocked, "price": price}
 
 
 def _set_location(page, pincode: str) -> bool:
@@ -335,29 +350,33 @@ def check_all(products: List[Dict[str, str]]) -> List[Dict[str, Any]]:
                 if not coords:
                     print(f"[{get_ist_now()}] {pincode}: no coords configured -- skipping")
                     continue
-                ctx = browser.new_context(
-                    locale="en-IN", viewport={"width": 1366, "height": 900}, user_agent=UA,
-                    geolocation={"latitude": coords[0], "longitude": coords[1]},
-                    permissions=["geolocation"])
-                ctx.set_default_timeout(NAV_TIMEOUT_MS)
-                page = ctx.new_page()
-                located = False
                 for p in watch:
+                    # Fresh context per product: the location must be set on THAT product's own
+                    # page ("Select delivery location" present) for its serviceability to
+                    # resolve -- navigating with a persisted location leaves the buybox
+                    # unresolved (reads as neither deliverable nor blocked).
+                    ctx = browser.new_context(
+                        locale="en-IN", viewport={"width": 1366, "height": 900}, user_agent=UA,
+                        geolocation={"latitude": coords[0], "longitude": coords[1]},
+                        permissions=["geolocation"])
+                    ctx.set_default_timeout(NAV_TIMEOUT_MS)
+                    page = ctx.new_page()
+                    info = None
                     try:
                         page.goto(p["url"], wait_until="domcontentloaded", timeout=NAV_TIMEOUT_MS)
                         page.wait_for_timeout(1500)
-                        if not located:
-                            located = _set_location(page, pincode)
-                            page.wait_for_timeout(800)
+                        _set_location(page, pincode)
                         info = _read_buybox(page)
                     except Exception as e:
                         print(f"[{get_ist_now()}] {pincode} {p['pid']}: {str(e)[:60]}")
+                    finally:
+                        ctx.close()
+                    if not info:
                         continue
                     if info["price"]:
                         by_pid[p["pid"]]["price"] = info["price"]
                     if info["buyable"]:
                         by_pid[p["pid"]]["available_pincodes"].append(pincode)
-                ctx.close()
         finally:
             browser.close()
 
