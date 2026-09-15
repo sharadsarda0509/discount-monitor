@@ -372,6 +372,10 @@ jobs:
         continue-on-error: true
 
       - name: Check Flipkart iPhone 15/16/17 + 18 Pro stock (5 pincodes)
+        if: false  # disabled — a guest browser can't see Flipkart's logged-in checkout-only
+                   # "item not available for purchase" state, so listings that pass the guest
+                   # buybox (Buy Now + delivery promise) but fail at checkout would false-alert.
+                   # Re-enable once a logged-in session (checkout-level check) is wired in.
         env:
           SENDER_EMAIL: ${{ secrets.SENDER_EMAIL }}
           RECEIVER_EMAIL: ${{ secrets.RECEIVER_EMAIL }}
