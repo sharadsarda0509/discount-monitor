@@ -240,6 +240,7 @@ jobs:
         continue-on-error: true
 
       - name: Check Shopsy Flipkart Physical Gift Card stock (Rs.1000)
+        if: false  # disabled per user request
         env:
           SENDER_EMAIL: ${{ secrets.SENDER_EMAIL }}
           RECEIVER_EMAIL: ${{ secrets.RECEIVER_EMAIL }}
@@ -367,6 +368,7 @@ jobs:
         continue-on-error: true
 
       - name: Check Flipkart iPhone stock (15 128GB, 17 256GB) per pincode -- rome API, browserless
+        if: false  # disabled per user request
         env:
           SENDER_EMAIL: ${{ secrets.SENDER_EMAIL }}
           RECEIVER_EMAIL: ${{ secrets.RECEIVER_EMAIL }}
