@@ -368,7 +368,6 @@ jobs:
         continue-on-error: true
 
       - name: Check SmartBuy iPhone 17 stock (256GB, all colours) -- add-to-cart probe, browserless
-        if: false  # disabled per user request
         env:
           SENDER_EMAIL: ${{ secrets.SENDER_EMAIL }}
           RECEIVER_EMAIL: ${{ secrets.RECEIVER_EMAIL }}
