@@ -367,6 +367,24 @@ jobs:
           python check_croma_iphone.py
         continue-on-error: true
 
+      - name: Check SmartBuy iPhone 17 stock (256GB, all colours) -- add-to-cart probe, browserless
+        if: false  # disabled per user request
+        env:
+          SENDER_EMAIL: ${{ secrets.SENDER_EMAIL }}
+          RECEIVER_EMAIL: ${{ secrets.RECEIVER_EMAIL }}
+          EMAIL_PASSWORD: ${{ secrets.EMAIL_PASSWORD }}
+          NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
+          # iPhone 17, 256GB, every colour. Stock is probed by replaying the site's own
+          # add-to-cart XHR (self-generated form_key + PHPSESSID); a variant counts as in
+          # stock only if it carts AND isn't flagged out-of-stock on the cart page.
+          SMARTBUY_STORAGES: "256GB"
+          SMARTBUY_COLORS: "Black,White,Sage,Lavender,Mist Blue"
+          # Flash-sale units flap in/out; 2 min re-notifies a real restock without spamming.
+          SMARTBUY_COOLDOWN_HOURS: "0.0333"  # 2 minutes
+        run: |
+          python check_smartbuy_iphone.py
+        continue-on-error: true
+
       - name: Check Flipkart iPhone stock (15 128GB, 17 256GB) per pincode -- rome API, browserless
         if: false  # disabled per user request
         env:
