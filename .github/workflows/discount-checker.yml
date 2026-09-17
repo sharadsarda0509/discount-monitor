@@ -33,6 +33,22 @@ jobs:
       BRIGHTDATA_BROWSER_WSS_9: ${{ secrets.BRIGHTDATA_BROWSER_WSS_9 }}
       BRIGHTDATA_BROWSER_WSS_10: ${{ secrets.BRIGHTDATA_BROWSER_WSS_10 }}
       BRIGHTDATA_BROWSER_WSS_11: ${{ secrets.BRIGHTDATA_BROWSER_WSS_11 }}
+      # Scrapfly keys (BigBasket -> beats Akamai via asp). Cycled like the BD pool: each
+      # free account is ~1,000 credits/mo; scrapfly_reader auto-discovers SCRAPFLY_KEY[_N]
+      # and rotates them. Unset secrets are empty and ignored. Add more slots as you create
+      # accounts. ~25 credits/call, so the BigBasket step throttles hard (see below).
+      SCRAPFLY_KEY: ${{ secrets.SCRAPFLY_KEY }}
+      SCRAPFLY_KEY_2: ${{ secrets.SCRAPFLY_KEY_2 }}
+      SCRAPFLY_KEY_3: ${{ secrets.SCRAPFLY_KEY_3 }}
+      SCRAPFLY_KEY_4: ${{ secrets.SCRAPFLY_KEY_4 }}
+      SCRAPFLY_KEY_5: ${{ secrets.SCRAPFLY_KEY_5 }}
+      SCRAPFLY_KEY_6: ${{ secrets.SCRAPFLY_KEY_6 }}
+      SCRAPFLY_KEY_7: ${{ secrets.SCRAPFLY_KEY_7 }}
+      SCRAPFLY_KEY_8: ${{ secrets.SCRAPFLY_KEY_8 }}
+      SCRAPFLY_KEY_9: ${{ secrets.SCRAPFLY_KEY_9 }}
+      SCRAPFLY_KEY_10: ${{ secrets.SCRAPFLY_KEY_10 }}
+      SCRAPFLY_KEY_11: ${{ secrets.SCRAPFLY_KEY_11 }}
+      SCRAPFLY_KEY_12: ${{ secrets.SCRAPFLY_KEY_12 }}
 
     steps:
       - name: Checkout repository
@@ -348,9 +364,11 @@ jobs:
           BIGBASKET_COOLDOWN_HOURS: "0.0333"  # 2 minutes
           BIGBASKET_LAT: ${{ secrets.BIGBASKET_LAT }}
           BIGBASKET_LON: ${{ secrets.BIGBASKET_LON }}
-          # BigBasket is Akamai-gated -> routes through Bright Data (browserless bare
-          # requests 403). Each scrape burns BD credits, so throttle to one per ~120 min.
-          BIGBASKET_RUN_INTERVAL_MIN: "120"
+          # BigBasket is Akamai-gated -> routes through Scrapfly (asp), ~25 credits/call
+          # (+ a retry when listing-svc throws its transient PL5012 404). With 4 free keys
+          # (~4,000 credits/mo) that budgets to a scrape every ~8h. Raise/lower as you add
+          # keys; scrapfly_reader cycles all SCRAPFLY_KEY[_N] secrets.
+          BIGBASKET_RUN_INTERVAL_MIN: "480"
         run: |
           python check_bigbasket_iphone.py
         continue-on-error: true

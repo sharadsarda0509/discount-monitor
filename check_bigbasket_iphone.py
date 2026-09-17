@@ -44,6 +44,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from iphone_models import models_summary
 import brightdata_browser
+import scrapfly_reader
 
 try:
     from curl_cffi import requests as cffi_requests
@@ -500,36 +501,131 @@ def _browser_check(build_id: str, products: Dict[str, str]) -> List[Dict[str, An
     return infos
 
 
+# --- Scrapfly path (Akamai-beating, browserless via api.scrapfly.io) ----------------
+# listing-svc returns every listed iPhone -- across the tabs + variant/consolidated
+# blocks -- with its per-location availability (avail_status / button / not_for_sale)
+# in ONE call, so a single Scrapfly call per page covers the whole watch-list. Pages
+# default to 1 to conserve credits (asp residential calls are ~25 credits each).
+SCRAPFLY_LISTING_PAGES = int(os.environ.get("BIGBASKET_LISTING_PAGES", 1))
+# listing-svc intermittently 404s with a transient backend error (PL5012 "please try
+# again") -- past Akamai, but BigBasket flaked. A retry on a fresh Scrapfly IP clears it.
+# Each retry spends credits, so keep this small.
+SCRAPFLY_RETRIES = int(os.environ.get("BIGBASKET_SCRAPFLY_RETRIES", 2))
+
+
+def _listing_products(data: Any) -> List[Dict[str, Any]]:
+    """The authoritative search-result products (tabs[].product_info.products). ONLY these
+    carry per-location availability; the variant/consolidated blocks elsewhere in the
+    payload expose a catalog-level avail_status that falsely reads "001"/in-stock even when
+    the item is OOS at the pincode -- so we deliberately do NOT walk those (verified: a
+    recursive walk produced false 'in stock' for 560035 while product_info showed OOS)."""
+    out: List[Dict[str, Any]] = []
+    for t in (data.get("tabs") or []):
+        out.extend((t.get("product_info") or {}).get("products") or [])
+    return out
+
+
+def _listing_price(p: Dict[str, Any]) -> Dict[str, Optional[float]]:
+    """{price, mrp} from a listing-svc product's pricing.discount block."""
+    disc = (p.get("pricing") or {}).get("discount") or {}
+    def money(v):
+        try:
+            return float(str(v).replace(",", "")) if v not in (None, "") else None
+        except (TypeError, ValueError):
+            return None
+    return {"price": money((disc.get("prim_price") or {}).get("sp")), "mrp": money(disc.get("mrp"))}
+
+
+def _scrapfly_scan() -> Optional[List[Dict[str, Any]]]:
+    """Fetch listing-svc via Scrapfly (asp clears Akamai, _bb_lat_long cookie pins the
+    location) and return info dicts for every watched base handset. Returns None only if
+    every key failed for every page (so the caller can log/abort rather than false 'OOS')."""
+    products: Dict[str, Dict[str, Any]] = {}
+    any_ok = False
+    for page in range(1, SCRAPFLY_LISTING_PAGES + 1):
+        url = f"{LISTING_URL}?type=ps&slug={SEARCH_TERM}&page={page}"
+        res = {"status": 0}
+        for attempt in range(SCRAPFLY_RETRIES + 1):
+            res = scrapfly_reader.fetch(url, cookies=_cookies())
+            if res.get("status") == 200:
+                break
+            print(f"[{get_ist_now()}] scrapfly listing page {page} attempt "
+                  f"{attempt + 1}/{SCRAPFLY_RETRIES + 1} -> upstream {res.get('status')}")
+            if attempt < SCRAPFLY_RETRIES:
+                time.sleep(2)  # fresh IP next attempt clears the transient PL5012
+        if res.get("status") != 200:
+            continue
+        any_ok = True
+        try:
+            for p in _listing_products(json.loads(res.get("text") or "{}")):
+                products.setdefault(str(p.get("id") or p.get("desc")), p)
+        except ValueError as e:
+            print(f"[{get_ist_now()}] scrapfly listing page {page} bad json: {e}")
+    if not any_ok:
+        return None
+    infos: List[Dict[str, Any]] = []
+    for pid, p in products.items():
+        name = (p.get("desc") or "").strip()
+        if not _is_handset(name):
+            continue
+        av = p.get("availability") or {}
+        pr = _listing_price(p)
+        url = p.get("absolute_url")
+        infos.append({
+            "id": pid, "name": name,
+            "avail_status": av.get("avail_status"), "button": av.get("button"),
+            "label": av.get("label"), "not_for_sale": av.get("not_for_sale"),
+            "sp": pr["price"], "mrp": pr["mrp"],
+            "url": ("https://www.bigbasket.com" + url) if url else PRODUCT_PAGE,
+            # Same gate as the pd path: listed in stock, not a "Notify Me", orderable here.
+            "in_stock": (str(av.get("avail_status")) == "001"
+                         and av.get("button") != "Notify Me"
+                         and not av.get("not_for_sale")),
+        })
+    return infos
+
+
 def check_bigbasket_iphone():
-    use_browser = brightdata_browser.has_scraping_browser()
+    use_scrapfly = scrapfly_reader.is_enabled()
+    use_browser = (not use_scrapfly) and brightdata_browser.has_scraping_browser()
+    source = ("Scrapfly (asp)" if use_scrapfly
+              else "Bright Data Scraping Browser" if use_browser else "direct request")
     print("=" * 60)
     print(f"BigBasket iPhone monitor -- {get_ist_now()}")
     print(f"Location: lat={LAT}, lon={LON} (pin {PINCODE})   Models: {', '.join(MODELS)}")
-    print(f"Source: {'Bright Data Scraping Browser' if use_browser else 'direct request'}")
+    print(f"Source: {source}")
     print("=" * 60)
 
-    if use_browser and _recently_scraped():
+    # Both paid paths (Scrapfly credits / BD credits) throttle to conserve budget.
+    if (use_scrapfly or use_browser) and _recently_scraped():
         return False
 
-    # Dynamic discovery (like Reliance) merged with the seeded fallback, de-duped by id.
-    if use_browser:
+    if use_scrapfly:
+        infos = _scrapfly_scan()
+        _mark_scraped()  # count the credit spend against the throttle even if it fails
+        if infos is None:
+            print(f"[{get_ist_now()}] All Scrapfly keys failed -- aborting this run.")
+            return False
+        print(f"[{get_ist_now()}] watching {len(infos)} listed handset(s)")
+    elif use_browser:
+        # Dynamic discovery (like Reliance) merged with the seeded fallback, de-duped by id.
         build_id, products = _browser_discover()
         _mark_scraped()  # count the browser session against the throttle even if it fails
+        if not build_id:
+            print(f"[{get_ist_now()}] Could not resolve buildId -- aborting this run.")
+            return False
+        print(f"[{get_ist_now()}] buildId={build_id}")
+        infos = _browser_check(build_id, products)
     else:
         build_id = fetch_build_id()
         products = {pid: slug for pid, slug in _products()}
         for pid, slug in discover_products():
             products[pid] = slug
         print(f"[{get_ist_now()}] watching {len(products)} SKU(s)")
-
-    if not build_id:
-        print(f"[{get_ist_now()}] Could not resolve buildId -- aborting this run.")
-        return False
-    print(f"[{get_ist_now()}] buildId={build_id}")
-
-    if use_browser:
-        infos = _browser_check(build_id, products)
-    else:
+        if not build_id:
+            print(f"[{get_ist_now()}] Could not resolve buildId -- aborting this run.")
+            return False
+        print(f"[{get_ist_now()}] buildId={build_id}")
         infos = []
         for i, (pid, slug) in enumerate(products.items()):
             if i:
