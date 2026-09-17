@@ -2,11 +2,15 @@
 """
 BigBasket -- iPhone 15 / 16 / 17 base handset stock monitor (hyperlocal, fully autonomous).
 
-BigBasket's search/listing API is locked behind an Akamai-validated, geolocated browser
-session that cannot be replicated headlessly. BUT its Next.js product-detail SSR endpoint
-IS reachable from a plain server request and -- crucially -- honours the `_bb_lat_long`
-cookie regardless of the caller's IP, so it returns per-location availability from GitHub
-Actions without any browser, cookie upload, or manual step:
+BigBasket is behind Akamai Bot Manager: every endpoint (homepage, listing-svc, the pd
+SSR json) now returns a 403 "Access Denied" to a plain server request -- even from a
+residential IP -- because Akamai fingerprints the request and demands its JS/`_abck`
+challenge be solved. So the monitor routes through the Bright Data Scraping Browser
+(brightdata_browser, same as Blinkit/Zepto): a real Chrome that clears the challenge.
+Per-location availability still comes from the `_bb_lat_long` cookie, which we seed into
+the browser context (browser_fetch set_cookies) before navigating. When no Scraping
+Browser is configured the code falls back to a direct request (which Akamai 403s -- only
+useful if the block ever lifts). The data endpoint is unchanged:
 
   GET https://www.bigbasket.com/_next/data/<buildId>/pd/<id>/<slug>.json
 
@@ -39,6 +43,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from iphone_models import models_summary
+import brightdata_browser
 
 try:
     from curl_cffi import requests as cffi_requests
@@ -71,6 +76,11 @@ LON = str(os.environ.get("BIGBASKET_LON") or "77.6821069")
 PINCODE = os.environ.get("BIGBASKET_PINCODE", "560035").strip()
 
 MODELS = [m.strip() for m in os.environ.get("BIGBASKET_MODELS", "15,16,17").split(",") if m.strip()]
+
+# Minimum minutes between actual Scraping Browser scrapes. The workflow fires every 5 min,
+# but each browser scrape spends Bright Data credits, so throttle to conserve them.
+# 0 = scrape on every trigger. Only applies when routing through Bright Data.
+RUN_INTERVAL_MIN = float(os.environ.get("BIGBASKET_RUN_INTERVAL_MIN", "0"))
 
 # BigBasket rate-limits the _next/data pd endpoint (HTTP 429) on bursts. Retry each pd a
 # few times with exponential backoff, and space consecutive pd requests apart, so a
@@ -180,13 +190,60 @@ def record_alert(alert_type: str):
     STATE_FILE.write_text(json.dumps(state, indent=2))
 
 
+def _recently_scraped() -> bool:
+    """True if a browser scrape ran within RUN_INTERVAL_MIN -- skip to conserve credits."""
+    if RUN_INTERVAL_MIN <= 0:
+        return False
+    try:
+        state = json.loads(STATE_FILE.read_text()) if STATE_FILE.exists() else {}
+        last = state.get("bigbasket_iphone_lastrun")
+        if not last:
+            return False
+        last_time = datetime.fromisoformat(last)
+        if last_time.tzinfo is None:
+            last_time = last_time.replace(tzinfo=IST)
+        elapsed_min = (get_ist_now() - last_time).total_seconds() / 60
+        if elapsed_min < RUN_INTERVAL_MIN:
+            print(f"[{get_ist_now()}] Throttled: last scrape {elapsed_min:.0f}m ago "
+                  f"(< {RUN_INTERVAL_MIN:.0f}m) -- skipping to save Scraping Browser credits")
+            return True
+        return False
+    except Exception:
+        return False
+
+
+def _mark_scraped():
+    STATE_DIR.mkdir(exist_ok=True)
+    state = {}
+    if STATE_FILE.exists():
+        try:
+            state = json.loads(STATE_FILE.read_text())
+        except Exception:
+            pass
+    state["bigbasket_iphone_lastrun"] = get_ist_now().isoformat()
+    STATE_FILE.write_text(json.dumps(state, indent=2))
+
+
+def _browser_cookies() -> List[Dict[str, str]]:
+    """`_cookies()` as Playwright cookie dicts to seed into the Scraping Browser context,
+    so the origin request + same-origin fetch()es carry the `_bb_lat_long` location."""
+    return [{"name": k, "value": v, "domain": ".bigbasket.com", "path": "/"}
+            for k, v in _cookies().items()]
+
+
+def _extract_build_id(html: str) -> Optional[str]:
+    m = re.search(r'"buildId":"([^"]+)"', html or "")
+    return m.group(1) if m else None
+
+
 def fetch_build_id() -> Optional[str]:
+    # Broad except: curl_cffi raises its own HTTPError (not a requests.RequestException)
+    # on the Akamai 403, so a narrow except would let it crash the whole run.
     try:
         r = _get(HOME_URL, headers={"User-Agent": UA}, cookies=_cookies(), timeout=30)
         r.raise_for_status()
-        m = re.search(r'"buildId":"([^"]+)"', r.text)
-        return m.group(1) if m else None
-    except (requests.RequestException, ValueError) as e:
+        return _extract_build_id(r.text)
+    except Exception as e:
         print(f"[{get_ist_now()}] homepage/buildId fetch failed: {e}")
         return None
 
@@ -210,22 +267,32 @@ def discover_products(max_pages: int = 5) -> List[Tuple[str, str]]:
                      cookies=_cookies(), timeout=30)
             if r.status_code != 200:
                 break
-            tabs = (r.json() or {}).get("tabs") or []
-        except (requests.RequestException, ValueError) as e:
+            got = _collect_handsets_from_listing(r.text, found)
+        except Exception as e:
             print(f"[{get_ist_now()}] discovery page {page} failed: {e}")
             break
-        got = 0
-        for t in tabs:
-            for p in ((t.get("product_info") or {}).get("products") or []):
-                got += 1
-                if not _is_handset((p.get("desc") or "").strip()):
-                    continue
-                m = re.search(r"/pd/(\d+)/([^/?]+)", str(p.get("absolute_url") or ""))
-                if m:
-                    found.setdefault(m.group(1), m.group(2))
         if got == 0:
             break
     return list(found.items())
+
+
+def _collect_handsets_from_listing(text: str, out: Dict[str, str]) -> int:
+    """Parse one listing-svc page's JSON: add base-handset (id -> slug) to `out`.
+    Returns the number of products seen on the page (0 => stop paging)."""
+    try:
+        tabs = (json.loads(text) or {}).get("tabs") or []
+    except (ValueError, TypeError):
+        return 0
+    got = 0
+    for t in tabs:
+        for p in ((t.get("product_info") or {}).get("products") or []):
+            got += 1
+            if not _is_handset((p.get("desc") or "").strip()):
+                continue
+            m = re.search(r"/pd/(\d+)/([^/?]+)", str(p.get("absolute_url") or ""))
+            if m:
+                out.setdefault(m.group(1), m.group(2))
+    return got
 
 
 def _find_product(node: Any, pid: str) -> Optional[Dict[str, Any]]:
@@ -253,7 +320,7 @@ def check_product(build_id: str, pid: str, slug: str) -> Optional[Dict[str, Any]
     for attempt in range(PD_MAX_RETRIES + 1):
         try:
             r = _get(url, headers=headers, cookies=_cookies(), timeout=30)
-        except requests.RequestException as e:
+        except Exception as e:
             print(f"[{get_ist_now()}] pd {pid} failed: {e}")
             return None
         if r.status_code != 429:
@@ -272,7 +339,12 @@ def check_product(build_id: str, pid: str, slug: str) -> Optional[Dict[str, Any]
     except ValueError as e:
         print(f"[{get_ist_now()}] pd {pid} bad json: {e}")
         return None
+    return _parse_pd(pid, slug, data)
 
+
+def _parse_pd(pid: str, slug: str, data: Any) -> Optional[Dict[str, Any]]:
+    """Extract the availability dict for `pid` from a pd SSR json payload (shared by the
+    direct and Bright Data paths). Returns None if the product node isn't a watched handset."""
     p = _find_product(data, pid)
     if not p:
         print(f"[{get_ist_now()}] pd {pid} ({slug}): product node not found")
@@ -366,34 +438,108 @@ def send_alert(items: List[Dict[str, Any]]) -> bool:
     return ntfy_ok or email_ok
 
 
+# Listing pages to pull per browser discovery session. Each page is one extra fetch in
+# the (already open) Scraping Browser session, so this is cheap; 3 covers the iPhone SKUs.
+DISCOVER_PAGES = int(os.environ.get("BIGBASKET_DISCOVER_PAGES", 3))
+
+
+def _browser_discover() -> Tuple[Optional[str], Dict[str, str]]:
+    """One Scraping Browser session: fetch the homepage (-> buildId) and the first
+    DISCOVER_PAGES listing-svc pages (-> discovered SKUs), with the location cookie seeded.
+    Returns (build_id, {id: slug}) with the seeded fallback list merged in."""
+    calls = [{"url": HOME_URL, "headers": {"User-Agent": UA}}]
+    for page in range(1, DISCOVER_PAGES + 1):
+        calls.append({
+            "url": f"{LISTING_URL}?type=ps&slug={SEARCH_TERM}&page={page}",
+            "headers": {"User-Agent": UA, "x-channel": "BB-WEB", "accept": "*/*",
+                        "referer": PRODUCT_PAGE},
+        })
+    resp = brightdata_browser.browser_fetch(HOME_URL, calls, set_cookies=_browser_cookies()) or []
+
+    build_id = None
+    if resp and resp[0].get("status") == 200:
+        build_id = _extract_build_id(resp[0].get("text") or "")
+    elif resp:
+        print(f"[{get_ist_now()}] homepage via browser HTTP {resp[0].get('status')}")
+
+    products: Dict[str, str] = {pid: slug for pid, slug in _products()}
+    discovered: Dict[str, str] = {}
+    for r in resp[1:]:
+        if r.get("status") == 200:
+            _collect_handsets_from_listing(r.get("text") or "", discovered)
+    products.update(discovered)  # live listing slugs win over the seed
+    print(f"[{get_ist_now()}] discovered {len(discovered)} SKU(s) via search; "
+          f"watching {len(products)} total")
+    return build_id, products
+
+
+def _browser_check(build_id: str, products: Dict[str, str]) -> List[Dict[str, Any]]:
+    """One Scraping Browser session: fetch each product's pd SSR json (location cookie
+    seeded) and parse availability. Returns info dicts for the watched handsets."""
+    items = list(products.items())
+    calls = [{
+        "url": (f"https://www.bigbasket.com/_next/data/{build_id}/pd/{pid}/{slug}.json"
+                f"?params={pid}&params={slug}"),
+        "headers": {"User-Agent": UA, "x-channel": "BB-WEB", "accept": "*/*", "referer": HOME_URL},
+    } for pid, slug in items]
+    resp = brightdata_browser.browser_fetch(HOME_URL, calls, set_cookies=_browser_cookies()) or []
+
+    infos: List[Dict[str, Any]] = []
+    for (pid, slug), r in zip(items, resp):
+        if r.get("status") != 200:
+            print(f"[{get_ist_now()}] pd {pid} HTTP {r.get('status')}")
+            continue
+        try:
+            data = json.loads(r.get("text") or "")
+        except ValueError as e:
+            print(f"[{get_ist_now()}] pd {pid} bad json: {e}")
+            continue
+        info = _parse_pd(pid, slug, data)
+        if info:
+            infos.append(info)
+    return infos
+
+
 def check_bigbasket_iphone():
+    use_browser = brightdata_browser.has_scraping_browser()
     print("=" * 60)
     print(f"BigBasket iPhone monitor -- {get_ist_now()}")
     print(f"Location: lat={LAT}, lon={LON} (pin {PINCODE})   Models: {', '.join(MODELS)}")
+    print(f"Source: {'Bright Data Scraping Browser' if use_browser else 'direct request'}")
     print("=" * 60)
 
-    build_id = fetch_build_id()
+    if use_browser and _recently_scraped():
+        return False
+
+    # Dynamic discovery (like Reliance) merged with the seeded fallback, de-duped by id.
+    if use_browser:
+        build_id, products = _browser_discover()
+        _mark_scraped()  # count the browser session against the throttle even if it fails
+    else:
+        build_id = fetch_build_id()
+        products = {pid: slug for pid, slug in _products()}
+        for pid, slug in discover_products():
+            products[pid] = slug
+        print(f"[{get_ist_now()}] watching {len(products)} SKU(s)")
+
     if not build_id:
         print(f"[{get_ist_now()}] Could not resolve buildId -- aborting this run.")
         return False
     print(f"[{get_ist_now()}] buildId={build_id}")
 
-    # Dynamic discovery (like Reliance) merged with the seeded fallback, de-duped by id.
-    # Discovered slugs (from the live listing) win over the seed.
-    products: Dict[str, str] = {pid: slug for pid, slug in _products()}
-    discovered = discover_products()
-    for pid, slug in discovered:
-        products[pid] = slug
-    print(f"[{get_ist_now()}] discovered {len(discovered)} SKU(s) via search; "
-          f"watching {len(products)} total")
+    if use_browser:
+        infos = _browser_check(build_id, products)
+    else:
+        infos = []
+        for i, (pid, slug) in enumerate(products.items()):
+            if i:
+                time.sleep(PD_REQUEST_GAP_SEC)  # space pd requests to avoid BigBasket 429s
+            info = check_product(build_id, pid, slug)
+            if info:
+                infos.append(info)
 
     in_stock = []
-    for i, (pid, slug) in enumerate(products.items()):
-        if i:
-            time.sleep(PD_REQUEST_GAP_SEC)  # space pd requests to avoid BigBasket 429s
-        info = check_product(build_id, pid, slug)
-        if not info:
-            continue
+    for info in infos:
         if info["in_stock"]:
             status = "IN STOCK"
         else:

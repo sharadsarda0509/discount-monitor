@@ -348,6 +348,9 @@ jobs:
           BIGBASKET_COOLDOWN_HOURS: "0.0333"  # 2 minutes
           BIGBASKET_LAT: ${{ secrets.BIGBASKET_LAT }}
           BIGBASKET_LON: ${{ secrets.BIGBASKET_LON }}
+          # BigBasket is Akamai-gated -> routes through Bright Data (browserless bare
+          # requests 403). Each scrape burns BD credits, so throttle to one per ~120 min.
+          BIGBASKET_RUN_INTERVAL_MIN: "120"
         run: |
           python check_bigbasket_iphone.py
         continue-on-error: true

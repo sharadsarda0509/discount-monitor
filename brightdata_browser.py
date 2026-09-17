@@ -90,6 +90,12 @@ def is_configured() -> bool:
     return bool(_wss_urls()) or jina_reader.is_enabled()
 
 
+def has_scraping_browser() -> bool:
+    # A real Bright Data Scraping Browser endpoint (not just Jina). BigBasket is
+    # Akamai-gated and Jina 403s it, so it must route through an actual browser.
+    return bool(_wss_urls())
+
+
 def _wait_for_cookie(page, name: str, timeout_ms: int) -> None:
     """Poll until a cookie called `name` exists (e.g. an AWS-WAF token set by a JS
     challenge on navigation) or `timeout_ms` elapses. Returns as soon as it appears."""
@@ -103,12 +109,20 @@ def _wait_for_cookie(page, name: str, timeout_ms: int) -> None:
 
 def _run_once(wss: str, origin: str, calls: List[Dict[str, Any]],
               timeout_ms: int, settle_ms: int = 0,
-              wait_cookie: Optional[str] = None) -> List[Dict[str, Any]]:
+              wait_cookie: Optional[str] = None,
+              set_cookies: Optional[List[Dict[str, Any]]] = None) -> List[Dict[str, Any]]:
     from playwright.sync_api import sync_playwright
     with sync_playwright() as p:
         browser = p.chromium.connect_over_cdp(wss, timeout=timeout_ms)
         try:
             page = browser.new_page()
+            # Seed cookies (e.g. BigBasket's `_bb_lat_long` location cookie) before
+            # navigating, so the origin's own request and the fetch()es carry them.
+            if set_cookies:
+                try:
+                    page.context.add_cookies(set_cookies)
+                except Exception as e:
+                    print(f"[brightdata_browser] add_cookies failed: {e}")
             if _BLOCK_RESOURCES:
                 # Best-effort: if this Scraping Browser endpoint rejects CDP request
                 # interception, don't let it kill the fetch -- just skip the GB saving.
@@ -149,7 +163,8 @@ def _run_once(wss: str, origin: str, calls: List[Dict[str, Any]],
 
 def browser_fetch(origin: str, calls: List[Dict[str, Any]],
                   timeout_ms: int = 120000, settle_ms: int = 0,
-                  wait_cookie: Optional[str] = None) -> Optional[List[Dict[str, Any]]]:
+                  wait_cookie: Optional[str] = None,
+                  set_cookies: Optional[List[Dict[str, Any]]] = None) -> Optional[List[Dict[str, Any]]]:
     """Run `calls` from `origin`'s page context in one Scraping Browser session.
 
     Rotates across configured endpoints (spreads credit/rate load) and fails over on
@@ -176,7 +191,7 @@ def browser_fetch(origin: str, calls: List[Dict[str, Any]],
         if failed and bd_fallback and _wss_urls():
             print(f"[brightdata_browser] Jina left {len(failed)}/{len(calls)} amazon "
                   f"call(s) CAPTCHA/failed -> Bright Data fallback")
-            sub = _cdp_fetch([calls[i] for i in failed], origin, timeout_ms, settle_ms, wait_cookie) or []
+            sub = _cdp_fetch([calls[i] for i in failed], origin, timeout_ms, settle_ms, wait_cookie, set_cookies) or []
             for j, i in enumerate(failed):
                 if j < len(sub) and _clean(sub[j]):
                     results[i] = sub[j]
@@ -185,7 +200,7 @@ def browser_fetch(origin: str, calls: List[Dict[str, Any]],
                   f"call(s) CAPTCHA/failed -> BD fallback disabled; leaving unfetched")
         return results
 
-    return _cdp_fetch(calls, origin, timeout_ms, settle_ms, wait_cookie)
+    return _cdp_fetch(calls, origin, timeout_ms, settle_ms, wait_cookie, set_cookies)
 
 
 def _clean(r: Optional[Dict[str, Any]]) -> bool:
@@ -194,7 +209,8 @@ def _clean(r: Optional[Dict[str, Any]]) -> bool:
 
 
 def _cdp_fetch(calls: List[Dict[str, Any]], origin: str, timeout_ms: int,
-               settle_ms: int, wait_cookie: Optional[str]) -> Optional[List[Dict[str, Any]]]:
+               settle_ms: int, wait_cookie: Optional[str],
+               set_cookies: Optional[List[Dict[str, Any]]] = None) -> Optional[List[Dict[str, Any]]]:
     """Run `calls` through the Bright Data Scraping Browser: rotate across endpoints and
     fail over on connection error / uncleared challenge. Returns [{status,text}] or None."""
     urls = _wss_urls()
@@ -207,7 +223,7 @@ def _cdp_fetch(calls: List[Dict[str, Any]], origin: str, timeout_ms: int,
     for wss in urls:
         zone = wss.split("zone-", 1)[-1].split(":", 1)[0] if "zone-" in wss else "?"
         try:
-            result = _run_once(wss, origin, calls, timeout_ms, settle_ms, wait_cookie)
+            result = _run_once(wss, origin, calls, timeout_ms, settle_ms, wait_cookie, set_cookies)
         except Exception as e:  # connection/navigation failure -> try the next endpoint
             last_err = e
             print(f"[brightdata_browser] endpoint (zone {zone}) failed: {e}")
