@@ -378,8 +378,8 @@ jobs:
           # stock only if it carts AND isn't flagged out-of-stock on the cart page.
           SMARTBUY_STORAGES: "256GB"
           SMARTBUY_COLORS: "Black,White,Sage,Lavender,Mist Blue"
-          # Flash-sale units flap in/out; 2 min re-notifies a real restock without spamming.
-          SMARTBUY_COOLDOWN_HOURS: "0.0333"  # 2 minutes
+          # Once an alert fires, hold off 6h before re-notifying the same variant.
+          SMARTBUY_COOLDOWN_HOURS: "6"
         run: |
           python check_smartbuy_iphone.py
         continue-on-error: true
