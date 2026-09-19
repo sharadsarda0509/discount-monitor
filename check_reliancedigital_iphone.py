@@ -25,9 +25,10 @@ Flow (static Bearer token):
 Handsets are discovered dynamically (not hardcoded), so a new model -- e.g. iPhone 17
 -- is picked up the day it lands in the catalog, without any code change.
 
-Alert condition: a watched iPhone (15/16/17 base, no Pro/Pro Max) must be BOTH in
-stock at the pincode AND carry a qualifying offer -- either a non-EMI instant/bank
-offer, or a Kotak (RELIANCE_EMI_BANK) No-Cost EMI offer. Stock alone does not alert.
+Alert condition: a watched iPhone (15/16/17 base, no Pro/Pro Max; excluding the
+iPhone 15 Yellow variant) must be BOTH in stock at the pincode AND carry a qualifying
+offer -- either a non-EMI instant/bank offer, or a Kotak (RELIANCE_EMI_BANK) No-Cost
+EMI offer. Stock alone does not alert.
 """
 
 import os
@@ -104,15 +105,19 @@ _ACCESSORY = re.compile(
     r"\b(case|cover|strap|glass|protector|charger|cable|adapter|screen|guard|"
     r"skin|holder|mount|stand|airpod|watch|band|tempered|wallet|magsafe|finewoven|"
     r"battery|power|pouch|sleeve|lens|film|dock|grip)\b", re.I)
+_IPHONE_15_YELLOW = re.compile(r"\biphone\s*15\b.*\byellow\b", re.I)
 
 
 def _is_handset(name: str) -> bool:
     """True only for the exact base iPhone models in MODELS.
 
     Excludes variant suffixes -- Plus, Pro, Pro Max, Air, mini, and the 'e' models
-    (e.g. 16e). "iPhone 16" matches; "iPhone 16 Plus" / "16e" / "16 Pro" do not.
+    (e.g. 16e). The unwanted iPhone 15 Yellow SKU is also excluded. "iPhone 16"
+    matches; "iPhone 16 Plus" / "16e" / "16 Pro" do not.
     """
     if not re.search(r"\bi[pP]hone\b", name, re.I):
+        return False
+    if _IPHONE_15_YELLOW.search(name):
         return False
     if _ACCESSORY.search(name):
         return False
