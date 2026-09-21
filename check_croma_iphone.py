@@ -29,9 +29,9 @@ filter keeps this to base models only (no Pro / Plus / Air / mini / e).
 
 Alert condition: a watched base iPhone is serviceable (in stock) at the pincode via
 any fulfillment type. By default no discount is required -- every watched model alerts
-on stock alone. Any models listed in CROMA_DISCOUNT_MODELS (default empty) ADDITIONALLY
-require a real discount (selling price below MRP); an in-stock but full-MRP unit of a
-gated model is logged but not alerted.
+on stock alone. Any models listed in CROMA_DISCOUNT_MODELS or SKUs listed in
+CROMA_DISCOUNT_SKUS ADDITIONALLY require a real discount (selling price below MRP);
+an in-stock but full-MRP unit of a gated model/SKU is logged but not alerted.
 """
 
 import os
@@ -81,6 +81,14 @@ MODELS = [m.strip() for m in os.environ.get("CROMA_MODELS", "15,16,17").split(",
 # Models that require a real discount (selling price < MRP) to alert; a watched model NOT
 # in this set alerts on stock alone. Default empty: no discount gate, all models alert on stock.
 DISCOUNT_MODELS = {m.strip() for m in os.environ.get("CROMA_DISCOUNT_MODELS", "").split(",") if m.strip()}
+# Individual SKUs that require a real discount to alert. Croma sometimes creates new
+# product IDs for the same colour/phone at a different list price; keep these
+# stock-monitored without stock-only alerts.
+DISCOUNT_SKUS = {
+    s.strip()
+    for s in os.environ.get("CROMA_DISCOUNT_SKUS", "324530,324462,324465,324468").split(",")
+    if s.strip()
+}
 
 # Watched products: SKU -> {name, path}. Seeded with the base iPhone 15/16/17 colours
 # Croma lists today; search is Akamai-gated so SKUs can't be discovered headlessly, and
@@ -100,11 +108,15 @@ _PRODUCTS: Dict[str, Dict[str, str]] = {
     "309693": {"name": "Apple iPhone 16 (128GB, Pink)",        "path": "/apple-iphone-16-128gb-pink-/p/309693"},
     "309694": {"name": "Apple iPhone 16 (128GB, Ultramarine)", "path": "/apple-iphone-16-128gb-ultramarine-/p/309694"},
     # iPhone 17 (256GB)
-    "317396": {"name": "Apple iPhone 17 (256GB, Black)",       "path": "/apple-iphone-17-256gb-black-/p/317396"},
+    "317396": {"name": "Apple iPhone 17 (256GB, Black, old price SKU)", "path": "/apple-iphone-17-256gb-black-/p/317396"},
     "317398": {"name": "Apple iPhone 17 (256GB, White)",       "path": "/apple-iphone-17-256gb-white-/p/317398"},
-    "317400": {"name": "Apple iPhone 17 (256GB, Mist Blue)",   "path": "/apple-iphone-17-256gb-mist-blue-/p/317400"},
-    "317401": {"name": "Apple iPhone 17 (256GB, Lavender)",    "path": "/apple-iphone-17-256gb-lavender-/p/317401"},
-    "317403": {"name": "Apple iPhone 17 (256GB, Sage)",        "path": "/apple-iphone-17-256gb-sage-/p/317403"},
+    "317400": {"name": "Apple iPhone 17 (256GB, Mist Blue, old price SKU)", "path": "/apple-iphone-17-256gb-mist-blue-/p/317400"},
+    "317401": {"name": "Apple iPhone 17 (256GB, Lavender, old price SKU)", "path": "/apple-iphone-17-256gb-lavender-/p/317401"},
+    "317403": {"name": "Apple iPhone 17 (256GB, Sage, old price SKU)", "path": "/apple-iphone-17-256gb-sage-/p/317403"},
+    "324530": {"name": "Apple iPhone 17 (256GB, Black, new price SKU)", "path": "/apple-iphone-17-256gb-black-/p/324530"},
+    "324462": {"name": "Apple iPhone 17 (256GB, Mist Blue, new price SKU)", "path": "/apple-iphone-17-256gb-mist-blue-/p/324462"},
+    "324465": {"name": "Apple iPhone 17 (256GB, Lavender, new price SKU)", "path": "/apple-iphone-17-256gb-lavender-/p/324465"},
+    "324468": {"name": "Apple iPhone 17 (256GB, Sage, new price SKU)", "path": "/apple-iphone-17-256gb-sage-/p/324468"},
 }
 
 BASE = "https://api.croma.com"
@@ -179,9 +191,9 @@ def _discount(product: Dict[str, Any]) -> Optional[Dict[str, float]]:
 
 
 def _passes_gate(product: Dict[str, Any]) -> bool:
-    """Discount-gated models (DISCOUNT_MODELS, default 15/16) alert only when discounted;
-    every other watched model (e.g. 17) alerts on stock alone."""
-    if _model_num(product["name"]) in DISCOUNT_MODELS:
+    """Discount-gated models/SKUs alert only when discounted; every other watched
+    handset alerts on stock alone."""
+    if product.get("sku") in DISCOUNT_SKUS or _model_num(product["name"]) in DISCOUNT_MODELS:
         return _discount(product) is not None
     return True
 

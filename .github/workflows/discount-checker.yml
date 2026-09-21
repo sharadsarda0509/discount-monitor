@@ -384,6 +384,9 @@ jobs:
           CROMA_MODELS: "15,16,17"
           # Empty = no discount gate; every watched model (15/16/17) alerts on stock alone.
           CROMA_DISCOUNT_MODELS: ""
+          # Current Croma iPhone 17 new-price SKUs are monitored, but should only alert
+          # when Croma has a real discount instead of stock-only availability.
+          CROMA_DISCOUNT_SKUS: "324530,324462,324465,324468"
           CROMA_COOLDOWN_HOURS: "0.0333"  # 2 minutes
         run: |
           python check_croma_iphone.py
