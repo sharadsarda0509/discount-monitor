@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
-Apple India -- iPhone 18 Pro (6.3" 256GB) same-day pickup monitor.
+Apple India -- iPhone 18 Pro / Pro Max Burgundy (256GB) same-day pickup monitor.
 
 Checks Apple Saket (R756) and Apple Noida (R787) for today-only pickup.
-Mirrors check_apple_iphone17.py -- same API, same logic, iPhone 18 Pro SKUs.
+Mirrors check_apple_iphone17.py -- same API, same logic, Burgundy Pro SKUs.
 """
 
 import os
@@ -62,14 +62,12 @@ REQUIRE_ALLOWED_STORE = os.environ.get(
 
 PICKUP_MSG_URL = "https://www.apple.com/in/shop/retail/pickup-message"
 
-PRODUCT_URL = "https://www.apple.com/in/shop/buy-iphone/iphone-18-pro/6.3-inch-display-256gb-black"
+PRODUCT_URL = "https://www.apple.com/in/shop/buy-iphone/iphone-18-pro/6.3-inch-display-256gb-burgundy"
 
-# iPhone 18 Pro 6.3" 256GB — India SKUs
-IPHONE18PRO_COLORS = {
-    "black":    "MJRP4HN/A",
-    "silver":   "MJRQ4HN/A",
-    "glacier":  "MJRT4HN/A",
-    "burgundy": "MJRR4HN/A",
+# iPhone 18 Pro / Pro Max 256GB Burgundy — India SKUs.
+IPHONE18PRO_PRODUCTS = {
+    "18 Pro Burgundy": "MJRR4HN/A",
+    "18 Pro Max Burgundy": "MJXQ4HN/A",
 }
 
 
@@ -126,7 +124,7 @@ def record_alert(alert_type: str):
 
 def fetch_pickup_availability(postal_code: str) -> Dict[str, Any]:
     params: Dict[str, str] = {"pl": "true", "location": postal_code}
-    for i, sku in enumerate(IPHONE18PRO_COLORS.values()):
+    for i, sku in enumerate(IPHONE18PRO_PRODUCTS.values()):
         params[f"parts.{i}"] = sku
 
     r = requests.get(
@@ -163,7 +161,7 @@ def parse_store_results(raw: Dict[str, Any]) -> List[Dict[str, Any]]:
             or any(t in store_name.lower() for t in ("saket", "noida"))
         )
 
-        for color, sku in IPHONE18PRO_COLORS.items():
+        for product, sku in IPHONE18PRO_PRODUCTS.items():
             pa = parts_avail.get(sku) or {}
             pickup_display = pa.get("pickupDisplay") or ""
             pickup_search_quote = (pa.get("pickupSearchQuote") or "").strip()
@@ -180,7 +178,7 @@ def parse_store_results(raw: Dict[str, Any]) -> List[Dict[str, Any]]:
             alert = api_available and store_ok and day_ok
 
             results.append({
-                "color": color,
+                "product": product,
                 "sku": sku,
                 "store_id": store_id,
                 "store_name": store_name,
@@ -202,10 +200,10 @@ def send_ntfy_alert(pin: str, matches: List[Dict[str, Any]]):
         print(f"[{get_ist_now()}] ntfy not configured (NTFY_TOPIC empty)")
         return False
     try:
-        lines = [f"PIN {pin} - iPhone 18 Pro SAME-DAY PICKUP available!\n"]
+        lines = [f"PIN {pin} - iPhone 18 Pro Burgundy SAME-DAY PICKUP available!\n"]
         for r in matches:
             lines.append(
-                f"- {r['color']}: {r['pickup_search_quote'] or 'Today'} "
+                f"- iPhone {r['product']}: {r['pickup_search_quote'] or 'Today'} "
                 f"@ {r['store_name']} ({r['store_id']})"
             )
             lines.append(f"  Open: {_buy_link(r['sku'])}")
@@ -219,7 +217,7 @@ def send_ntfy_alert(pin: str, matches: List[Dict[str, Any]]):
             f"https://ntfy.sh/{NTFY_TOPIC}",
             data=message.encode("utf-8"),
             headers={
-                "Title": f"iPhone 18 Pro pickup today: {len(matches)} match(es) - order now",
+                "Title": f"iPhone 18 Pro Burgundy pickup today: {len(matches)} match(es)",
                 "Priority": "high",
                 "Tags": "iphone,apple",
                 "Click": click_url,
@@ -243,13 +241,13 @@ def send_email_alert(pin: str, matches: List[Dict[str, Any]]) -> bool:
     try:
         ist_time = get_ist_now().strftime("%Y-%m-%d %H:%M:%S IST")
         lines = [
-            f"iPhone 18 Pro same-day pickup available for PIN {pin}.",
+            f"iPhone 18 Pro Burgundy same-day pickup available for PIN {pin}.",
             f"Stores: {','.join(ALLOWED_STORE_IDS)}  same_day_only={SAME_DAY_ONLY}",
             "",
         ]
         for r in matches:
             lines.append(
-                f"- {r['color']}: {r['pickup_search_quote'] or 'Today'} "
+                f"- iPhone {r['product']}: {r['pickup_search_quote'] or 'Today'} "
                 f"@ {r['store_name']} ({r['store_id']})"
             )
             lines.append(f"    Open buy box: {_buy_link(r['sku'])}")
@@ -263,7 +261,7 @@ def send_email_alert(pin: str, matches: List[Dict[str, Any]]) -> bool:
         ])
         text_body = "\n".join(lines)
         msg = MIMEMultipart("alternative")
-        msg["Subject"] = f"iPhone 18 Pro: same-day pickup available -- {len(matches)} match(es)"
+        msg["Subject"] = f"iPhone 18 Pro Burgundy: same-day pickup available -- {len(matches)} match(es)"
         msg["From"] = sender
         msg["To"] = receiver
         msg.attach(MIMEText(text_body, "plain"))
@@ -303,7 +301,7 @@ def _scan_once() -> List[Dict[str, Any]]:
         else:
             store_display = f"{r['store_name']} ({r['store_id']}) -- not target"
         print(
-            f"[{datetime.now()}] {r['color']:20} {r['sku']}  "
+            f"[{datetime.now()}] {r['product']:24} {r['sku']}  "
             f"today={sd}  alert={al}  {q!r}  {store_display}"
         )
         if r["alert_this"]:
@@ -321,7 +319,8 @@ def _scan_once() -> List[Dict[str, Any]]:
 
 def check_apple_iphone18pro():
     print("=" * 60)
-    print(f"Apple iPhone 18 Pro same-day pickup check -- {get_ist_now()}")
+    print(f"Apple iPhone 18 Pro Burgundy same-day pickup check -- {get_ist_now()}")
+    print(f"Products: {', '.join(IPHONE18PRO_PRODUCTS)}")
     print(f"PIN code: {POSTAL_CODE}")
     print(f"Target stores: {', '.join(ALLOWED_STORE_IDS)} (Saket + Noida)  require={REQUIRE_ALLOWED_STORE}")
     print(f"Same-day only (IST): {SAME_DAY_ONLY}")
@@ -337,7 +336,7 @@ def check_apple_iphone18pro():
 
         alerts = _scan_once()
         if alerts:
-            summary = ", ".join(f"{r['color']} @ {r['store_name']}" for r in alerts)
+            summary = ", ".join(f"{r['product']} @ {r['store_name']}" for r in alerts)
             print(f"[{get_ist_now()}] Same-day pickup alert: {summary}")
 
             if not should_send_alert("apple_iphone18pro"):
