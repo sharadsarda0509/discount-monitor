@@ -43,7 +43,7 @@ $('reset').addEventListener('click', async () => {
   try {
     const r = await chrome.runtime.sendMessage({ type: 'reset-open' });
     if (r && r.error) status('Reset failed: ' + r.error);
-    else if (r && r.opened) status('Fresh session — buy page opening.');
+    else if (r && r.opened) status('Fresh session — buy page opening. Wait 2-3s before Add to Bag (let Akamai\'s bot-check cookies reissue).');
     else status('Cleared. Set a buy URL in config to auto-open.');
   } catch (e) {
     status('Reset failed: ' + (e.message || e));

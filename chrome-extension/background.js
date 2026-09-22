@@ -116,8 +116,11 @@ chrome.webNavigation.onCommitted.addListener(async (d) => {
     await chrome.storage.local.set({ fpPendingClear: false });
   }
 
-  // Spoof only after a Reset has produced a seed, and only if not disabled.
-  if (fpSeed != null && fpSpoofEnabled !== false) {
+  // Spoof only after a Reset has produced a seed, AND only if explicitly enabled
+  // (default OFF -- see README "Honest caveat": a spoofed canvas/WebGL persona on
+  // an otherwise-real browser is itself a mismatch signal to Akamai/anti-fraud and
+  // can cause Add to Bag to be blocked more often, not less).
+  if (fpSeed != null && fpSpoofEnabled === true) {
     try {
       await chrome.scripting.executeScript({
         target, world: 'MAIN', injectImmediately: true, func: applyFpSpoof, args: [fpSeed]

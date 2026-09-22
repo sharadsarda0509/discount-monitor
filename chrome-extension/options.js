@@ -28,7 +28,11 @@ async function load() {
   }
   if (s) $('selectors').value = JSON.stringify(s, null, 2);
   $('onload').checked = !!on;
-  $('spoof').checked = spoof !== false; // default on (inert until first Reset)
+  // Default OFF: a spoofed canvas/WebGL fingerprint on an otherwise-real browser
+  // is a mismatch signal that can make Add to Bag MORE likely to be blocked, not
+  // less (see README "Honest caveat"). Only enable if you've verified it helps
+  // for your setup.
+  $('spoof').checked = spoof === true;
   toggleConditional();
 }
 

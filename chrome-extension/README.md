@@ -43,17 +43,27 @@ Popup → **Reset & open fresh** (or **Alt+Shift+R**) does, in order:
 This runs *before* the session on purpose — clearing or spoofing *after* autofill
 (mid-checkout) would wipe the live cart/session and change nothing already sent.
 
-**Canvas/WebGL spoof** (Options → Behaviour toggle, default on but inert until you
-first use Reset): injects a *consistent, seeded* canvas + WebGL fingerprint at
-`document_start` in the page's MAIN world. It's seeded (not per-call random) so the
-persona is stable within a session and changes only on the next Reset.
+**Canvas/WebGL spoof** (Options → Behaviour toggle, **default OFF**): injects a
+*consistent, seeded* canvas + WebGL fingerprint at `document_start` in the page's
+MAIN world, only if you explicitly enable it. It's seeded (not per-call random) so
+the persona is stable within a session and changes only on the next Reset.
 
-> ⚠️ **Honest caveat.** This extension's whole value (see above) is looking like a
-> *clean, real* browser. A spoofed fingerprint on an otherwise-real client can read
-> as **more** anomalous to Apple's anti-fraud, not less — mismatch/noise is itself a
-> signal. Cookie/storage clearing is the reliable lever; the fingerprint spoof is
-> best-effort and easy to turn off. **A separate clean Chrome profile (or container)
-> per attempt is more robust** than any in-page spoof.
+> ⚠️ **Honest caveat — this is why the toggle defaults OFF.** This extension's
+> whole value (see above) is looking like a *clean, real* browser. A spoofed
+> fingerprint on an otherwise-real client can read as **more** anomalous to
+> Apple's anti-fraud than no spoofing — mismatch/noise is itself a signal, and this
+> is a common cause of Add to Bag silently failing after Reset. Cookie/storage
+> clearing is the reliable lever; only turn the spoof on if you've verified it
+> helps for your setup. **A separate clean Chrome profile (or container) per
+> attempt is more robust** than any in-page spoof.
+
+> ⏱️ **Wait a few seconds after Reset before Add to Bag.** Reset deletes Akamai's
+> bot-check cookies (`_abck`, `bm_sz`, `ak_bmsc`, ...) along with everything else,
+> then navigates immediately. Those cookies are reissued by a JS challenge that
+> runs on page load and needs a moment to finish. Clicking Add to Bag before that
+> challenge completes sends the request with a missing/stale bot-token and Apple
+> rejects it. The popup now reminds you to wait ~2-3s after "Fresh session" before
+> adding to bag.
 
 ## Config
 Set once in **Options** (stored in `chrome.storage.local`, this browser only):
