@@ -138,7 +138,7 @@ jobs:
           python check_amazon.py
         continue-on-error: true
 
-      - name: Check Amazon iPhone 15/16/17 base-handset stock
+      - name: Check Amazon iPhone 15 base-handset stock
         env:
           SENDER_EMAIL: ${{ secrets.SENDER_EMAIL }}
           RECEIVER_EMAIL: ${{ secrets.RECEIVER_EMAIL }}
@@ -147,11 +147,12 @@ jobs:
           # 24h cooldown, keyed per-ASIN (see check_amazon_iphone.py) so each handset alerts
           # at most once/day and one model's alert never silences the others.
           AMAZON_IPHONE_COOLDOWN_HOURS: "24"
-          AMAZON_IPHONE_MODELS: "15,16,17"
-          # Also watch the 6.3" iPhone 18 Pro (not Pro Max), any storage. Base handsets stay 15/16/17.
+          # iPhone 16 and 17 disabled per user request -- only 15 base handset stays active.
+          AMAZON_IPHONE_MODELS: "15"
+          # Also watch the 6.3" iPhone 18 Pro (not Pro Max), any storage. Base handsets stay 15 only.
           AMAZON_IPHONE_PRO_MODELS: "18"
-          # iPhone 17/18 Pro: 256 GB only; iPhone 16: 128 GB only (skip other storages). Format model:gb, comma/;-sep.
-          AMAZON_IPHONE_STORAGE: "17:256,16:128,18:256"
+          # iPhone 18 Pro: 256 GB only (skip other storages). Format model:gb, comma/;-sep.
+          AMAZON_IPHONE_STORAGE: "18:256"
           # Delivery pincode: Prime badge + delivery promise are location-specific. Only alert
           # when Amazon commits a delivery promise here (real stock), not a ghost "Only N left".
           AMAZON_IPHONE_PINCODE: "560035"
