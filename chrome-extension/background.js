@@ -184,27 +184,65 @@ function applyFpSpoof(seed) {
     wrapExport('toDataURL');
     wrapExport('toBlob');
 
-    // WebGL: return a consistent persona vendor/renderer string. (Numeric params
-    // left untouched -- perturbing them breaks rendering and is trivially caught.)
-    const personas = [
-      ['Google Inc. (Apple)',  'ANGLE (Apple, ANGLE Metal Renderer: Apple M1, Unspecified Version)'],
-      ['Google Inc. (Apple)',  'ANGLE (Apple, ANGLE Metal Renderer: Apple M2, Unspecified Version)'],
-      ['Google Inc. (Intel)',  'ANGLE (Intel, Intel(R) Iris(TM) Plus Graphics 640, OpenGL 4.1)'],
-      ['Google Inc. (NVIDIA)', 'ANGLE (NVIDIA, NVIDIA GeForce RTX 3060 Direct3D11 vs_5_0 ps_5_0, D3D11)']
-    ];
-    const persona = personas[(seed >>> 0) % personas.length];
-    const patchGL = (proto) => {
-      if (!proto || !proto.getParameter) return;
-      const gp = proto.getParameter;
-      proto.getParameter = function (p) {
-        if (p === 37445) return persona[0]; // UNMASKED_VENDOR_WEBGL
-        if (p === 37446) return persona[1]; // UNMASKED_RENDERER_WEBGL
-        return gp.apply(this, arguments);
-      };
-    };
-    if (window.WebGLRenderingContext)  patchGL(WebGLRenderingContext.prototype);
-    if (window.WebGL2RenderingContext) patchGL(WebGL2RenderingContext.prototype);
+    // WebGL: only rotate the vendor/renderer STRING within your REAL GPU's
+    // vendor family (Apple/Intel/NVIDIA/AMD), never across it. Swapping to a
+    // different vendor family (e.g. reporting NVIDIA on a MacBook, which never
+    // ships a discrete NVIDIA GPU with Chrome's ANGLE/Metal renderer) is a much
+    // bigger red flag than no spoof at all -- it's a checkable, deterministic
+    // contradiction. If we can't confidently detect the real family, we skip
+    // the WebGL vendor/renderer spoof entirely and only keep the canvas noise
+    // above (which is subtle and vendor-agnostic).
+    let realRenderer = '';
+    try {
+      const probe = document.createElement('canvas');
+      const gl = probe.getContext('webgl') || probe.getContext('experimental-webgl');
+      const dbg = gl && gl.getExtension('WEBGL_debug_renderer_info');
+      if (dbg) realRenderer = String(gl.getParameter(dbg.UNMASKED_RENDERER_WEBGL) || '');
+    } catch (e) {}
 
-    console.log('[AppleReset] fp spoof installed — seed', seed, '| webgl', persona[1]);
+    const personaGroups = {
+      apple: [
+        ['Google Inc. (Apple)', 'ANGLE (Apple, ANGLE Metal Renderer: Apple M1, Unspecified Version)'],
+        ['Google Inc. (Apple)', 'ANGLE (Apple, ANGLE Metal Renderer: Apple M2, Unspecified Version)'],
+        ['Google Inc. (Apple)', 'ANGLE (Apple, ANGLE Metal Renderer: Apple M3, Unspecified Version)']
+      ],
+      intel: [
+        ['Google Inc. (Intel)', 'ANGLE (Intel, Intel(R) Iris(TM) Plus Graphics 640, OpenGL 4.1)'],
+        ['Google Inc. (Intel)', 'ANGLE (Intel, Intel(R) UHD Graphics 620, OpenGL 4.1)'],
+        ['Google Inc. (Intel)', 'ANGLE (Intel, Intel(R) Iris(TM) Xe Graphics, OpenGL 4.1)']
+      ],
+      nvidia: [
+        ['Google Inc. (NVIDIA)', 'ANGLE (NVIDIA, NVIDIA GeForce RTX 3060 Direct3D11 vs_5_0 ps_5_0, D3D11)'],
+        ['Google Inc. (NVIDIA)', 'ANGLE (NVIDIA, NVIDIA GeForce GTX 1660 Direct3D11 vs_5_0 ps_5_0, D3D11)']
+      ],
+      amd: [
+        ['Google Inc. (AMD)', 'ANGLE (AMD, AMD Radeon Pro 5500M Direct3D11 vs_5_0 ps_5_0, D3D11)'],
+        ['Google Inc. (AMD)', 'ANGLE (AMD, AMD Radeon RX 6600 Direct3D11 vs_5_0 ps_5_0, D3D11)']
+      ]
+    };
+    const family = /apple/i.test(realRenderer) ? 'apple'
+      : /nvidia|geforce|gtx|rtx/i.test(realRenderer) ? 'nvidia'
+      : /amd|radeon/i.test(realRenderer) ? 'amd'
+      : /intel/i.test(realRenderer) ? 'intel'
+      : null;
+    const pool = family && personaGroups[family];
+
+    if (pool && pool.length) {
+      const persona = pool[(seed >>> 0) % pool.length];
+      const patchGL = (proto) => {
+        if (!proto || !proto.getParameter) return;
+        const gp = proto.getParameter;
+        proto.getParameter = function (p) {
+          if (p === 37445) return persona[0]; // UNMASKED_VENDOR_WEBGL
+          if (p === 37446) return persona[1]; // UNMASKED_RENDERER_WEBGL
+          return gp.apply(this, arguments);
+        };
+      };
+      if (window.WebGLRenderingContext)  patchGL(WebGLRenderingContext.prototype);
+      if (window.WebGL2RenderingContext) patchGL(WebGL2RenderingContext.prototype);
+      console.log('[AppleReset] fp spoof installed — seed', seed, '| family', family, '| webgl', persona[1]);
+    } else {
+      console.log('[AppleReset] fp spoof: canvas noise only — real GPU family unrecognised, skipping WebGL vendor swap to avoid mismatch');
+    }
   } catch (e) { /* never break the page */ }
 }

@@ -44,18 +44,27 @@ This runs *before* the session on purpose — clearing or spoofing *after* autof
 (mid-checkout) would wipe the live cart/session and change nothing already sent.
 
 **Canvas/WebGL spoof** (Options → Behaviour toggle, **default OFF**): injects a
-*consistent, seeded* canvas + WebGL fingerprint at `document_start` in the page's
-MAIN world, only if you explicitly enable it. It's seeded (not per-call random) so
-the persona is stable within a session and changes only on the next Reset.
+*consistent, seeded* canvas noise + WebGL vendor/renderer string at
+`document_start` in the page's MAIN world, only if you explicitly enable it. It's
+seeded (not per-call random) so the persona is stable within a session and changes
+only on the next Reset.
+
+As of the latest version, the WebGL persona is **family-matched**: before
+patching, it detects your *real* GPU vendor (Apple/Intel/NVIDIA/AMD) via
+`WEBGL_debug_renderer_info` and only rotates the renderer string to another model
+**within that same vendor family** (e.g. "Apple M1" → "Apple M2", never "Apple M1"
+→ "NVIDIA RTX 3060"). If the real vendor can't be confidently detected, it skips
+the WebGL spoof entirely and falls back to canvas-noise-only — a mismatched vendor
+swap (spoofing NVIDIA on a MacBook, which never ships one) is a far bigger,
+deterministically-checkable red flag than no spoof at all.
 
 > ⚠️ **Honest caveat — this is why the toggle defaults OFF.** This extension's
-> whole value (see above) is looking like a *clean, real* browser. A spoofed
-> fingerprint on an otherwise-real client can read as **more** anomalous to
-> Apple's anti-fraud than no spoofing — mismatch/noise is itself a signal, and this
-> is a common cause of Add to Bag silently failing after Reset. Cookie/storage
-> clearing is the reliable lever; only turn the spoof on if you've verified it
-> helps for your setup. **A separate clean Chrome profile (or container) per
-> attempt is more robust** than any in-page spoof.
+> whole value (see above) is looking like a *clean, real* browser. Even a
+> family-matched spoof adds noise Apple's anti-fraud didn't ask for; cookie/storage
+> clearing is the reliable lever, and the fingerprint spoof (even improved) is
+> best-effort. Only turn it on if you've verified it helps for your setup.
+> **A separate clean Chrome profile (or container) per attempt is more robust**
+> than any in-page spoof.
 
 > ⏱️ **Wait a few seconds after Reset before Add to Bag.** Reset deletes Akamai's
 > bot-check cookies (`_abck`, `bm_sz`, `ak_bmsc`, ...) along with everything else,
