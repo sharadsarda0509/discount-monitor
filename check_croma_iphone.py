@@ -18,7 +18,16 @@ plain server request (curl_cffi Chrome impersonation, no auth token, no cookies)
               body asks 3 fulfillment types (HDEL home-delivery, STOR store
               pickup, SDEL same-day) for <itemID> at <zipCode>. A fulfilled
               line lands in promise.suggestedOption.option.promiseLines; an
-              unfulfilled one in unavailableLines. Any promiseLine => in stock.
+              unfulfilled one in unavailableLines. A promiseLine is treated as
+              in-stock only after a SECOND call re-confirms it
+              (CROMA_CONFIRM_DELAY_SECONDS later, default 20s) -- this ATP
+              "delivery promise" endpoint has been observed to flicker a
+              promiseLine in/out every few minutes for a SKU that is actually
+              out of stock (real-world case: iPhone 16 White 309692 alternated
+              IN STOCK / out of stock every ~5-min poll with no purchase
+              activity to explain it), causing false-positive alerts that show
+              OOS the moment you click Buy. Requiring two agreeing calls
+              filters that single-poll noise.
 
 Because search is gated, watched handsets are SEEDED (_PRODUCTS: SKU -> name + page
 path) with the base iPhone 15/16/17 colours Croma lists today -- pricing-services
@@ -38,6 +47,7 @@ import os
 import re
 import sys
 import json
+import time
 import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
@@ -78,6 +88,10 @@ PINCODES = [p.strip() for p in os.environ.get("CROMA_PINCODE", "560035,560048").
 # Which iPhone number-series to watch (comma-separated). Sub-variants such as
 # "17 Pro", "16 Plus", "17e" are excluded automatically by _is_handset.
 MODELS = [m.strip() for m in os.environ.get("CROMA_MODELS", "15,16,17").split(",") if m.strip()]
+# Seconds to wait before re-verifying a stock hit with a second inventory call; Croma's
+# ATP promise endpoint has been observed to flicker in/out for SKUs that are actually
+# out of stock (see check_stock docstring). Set to 0 to alert on the first hit alone.
+CONFIRM_DELAY_SECONDS = float(os.environ.get("CROMA_CONFIRM_DELAY_SECONDS", "20"))
 # Models that require a real discount (selling price < MRP) to alert; a watched model NOT
 # in this set alerts on stock alone. Default empty: no discount gate, all models alert on stock.
 DISCOUNT_MODELS = {m.strip() for m in os.environ.get("CROMA_DISCOUNT_MODELS", "").split(",") if m.strip()}
@@ -384,12 +398,38 @@ def _stock_at(sku: str, pincode: str) -> List[Dict[str, Any]]:
 
 
 def check_stock(product: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-    """Return stock info if the SKU is serviceable at ANY watched pincode, else None."""
+    """Return stock info if the SKU is serviceable at ANY watched pincode, else None.
+
+    Croma's inventory endpoint is an ATP "delivery promise" check, not the real-time
+    sellable-stock check used by Add to Bag / checkout -- it has been observed to
+    flicker a promiseLine in and out every few minutes for a SKU that is actually
+    out of stock (no real purchase activity could explain oscillating every ~5 min),
+    causing false-positive "in stock" alerts that show OOS when you actually try to
+    buy. To filter that noise, a first hit is re-verified with a second call after a
+    short delay (CROMA_CONFIRM_DELAY_SECONDS, default 20s) before being trusted; only
+    fulfillment lines present in BOTH checks are reported. Set
+    CROMA_CONFIRM_DELAY_SECONDS=0 to disable and alert on the first hit alone.
+    """
     fulfillments: List[Dict[str, Any]] = []
     for pincode in PINCODES:
         fulfillments.extend(_stock_at(product["sku"], pincode))
     if not fulfillments:
         return None
+
+    delay = CONFIRM_DELAY_SECONDS
+    if delay > 0:
+        time.sleep(delay)
+        confirm: List[Dict[str, Any]] = []
+        for pincode in PINCODES:
+            confirm.extend(_stock_at(product["sku"], pincode))
+        confirm_keys = {(f.get("method"), f.get("node"), f.get("pincode")) for f in confirm}
+        fulfillments = [f for f in fulfillments
+                        if (f.get("method"), f.get("node"), f.get("pincode")) in confirm_keys]
+        if not fulfillments:
+            print(f"[{get_ist_now()}] {product['name']:45.45}  flickered out on re-check "
+                  f"({delay:.0f}s later) -- not alerting (likely a false-positive promise)")
+            return None
+
     return {**product, "fulfillments": fulfillments}
 
 
