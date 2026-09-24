@@ -88,6 +88,11 @@ PINCODES = [p.strip() for p in os.environ.get("CROMA_PINCODE", "560035,560048").
 # Which iPhone number-series to watch (comma-separated). Sub-variants such as
 # "17 Pro", "16 Plus", "17e" are excluded automatically by _is_handset.
 MODELS = [m.strip() for m in os.environ.get("CROMA_MODELS", "15,16,17").split(",") if m.strip()]
+EXCLUDED_COLORS = {
+    c.strip().lower()
+    for c in os.environ.get("CROMA_EXCLUDED_COLORS", "").split(",")
+    if c.strip()
+}
 # Seconds to wait before re-verifying a stock hit with a second inventory call; Croma's
 # ATP promise endpoint has been observed to flicker in/out for SKUs that are actually
 # out of stock (see check_stock docstring). Set to 0 to alert on the first hit alone.
@@ -189,6 +194,11 @@ def _model_num(name: str) -> Optional[str]:
     """The iPhone number-series in a name ("Apple iPhone 16 (128GB, Teal)" -> "16")."""
     m = re.search(r"i[pP]hone\s*(\d{1,2})", name or "")
     return m.group(1) if m else None
+
+
+def _is_excluded_color(name: str) -> bool:
+    name_lower = name.lower()
+    return any(re.search(rf"\b{re.escape(color)}\b", name_lower) for color in EXCLUDED_COLORS)
 
 
 def _discount(product: Dict[str, Any]) -> Optional[Dict[str, float]]:
@@ -542,6 +552,9 @@ def check_croma_iphone():
     for sku in _skus():
         product = fetch_product(sku)
         if not product:
+            continue
+        if _is_excluded_color(product["name"]):
+            print(f"[{get_ist_now()}] {product['name']:45.45}  skipping (excluded color)")
             continue
         info = check_stock(product)
         if not info:

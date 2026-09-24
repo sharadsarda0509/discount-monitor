@@ -139,6 +139,7 @@ jobs:
         continue-on-error: true
 
       - name: Check Amazon iPhone 15 base-handset stock
+        if: false  # temporarily disabled per user request
         env:
           SENDER_EMAIL: ${{ secrets.SENDER_EMAIL }}
           RECEIVER_EMAIL: ${{ secrets.RECEIVER_EMAIL }}
@@ -149,10 +150,9 @@ jobs:
           AMAZON_IPHONE_COOLDOWN_HOURS: "24"
           # iPhone 16 and 17 disabled per user request -- only 15 base handset stays active.
           AMAZON_IPHONE_MODELS: "15"
-          # Also watch the 6.3" iPhone 18 Pro (not Pro Max), any storage. Base handsets stay 15 only.
-          AMAZON_IPHONE_PRO_MODELS: "18"
-          # iPhone 18 Pro: 256 GB only (skip other storages). Format model:gb, comma/;-sep.
-          AMAZON_IPHONE_STORAGE: "18:256"
+          # iPhone 18 Pro monitoring is temporarily disabled.
+          AMAZON_IPHONE_PRO_MODELS: ""
+          AMAZON_IPHONE_STORAGE: ""
           # Delivery pincode: Prime badge + delivery promise are location-specific. Only alert
           # when Amazon commits a delivery promise here (real stock), not a ghost "Only N left".
           AMAZON_IPHONE_PINCODE: "560035"
@@ -327,6 +327,7 @@ jobs:
           NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
           RELIANCE_PINCODE: "560035"
           RELIANCE_MODELS: "16,17"
+          RELIANCE_EXCLUDED_COLORS: "teal"
           RELIANCE_COOLDOWN_HOURS: "0.0333"  # 2 minutes
         run: |
           python check_reliancedigital_iphone.py
@@ -383,6 +384,7 @@ jobs:
           NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
           CROMA_PINCODE: "560035,560048"
           CROMA_MODELS: "16,17"
+          CROMA_EXCLUDED_COLORS: "teal"
           # Empty = no discount gate; every watched model (15/16/17) alerts on stock alone.
           CROMA_DISCOUNT_MODELS: ""
           # Current Croma iPhone 17 new-price SKUs are monitored, but should only alert

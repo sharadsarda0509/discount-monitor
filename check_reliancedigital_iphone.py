@@ -73,6 +73,11 @@ PINCODE = os.environ.get("RELIANCE_PINCODE", "560035").strip()
 # Which iPhone number-series to watch (comma-separated). Sub-variants such as
 # "16 Plus", "16e", "17 Pro Max" are matched automatically by the number.
 MODELS = [m.strip() for m in os.environ.get("RELIANCE_MODELS", "15,16,17").split(",") if m.strip()]
+EXCLUDED_COLORS = {
+    c.strip().lower()
+    for c in os.environ.get("RELIANCE_EXCLUDED_COLORS", "").split(",")
+    if c.strip()
+}
 
 BASE = "https://www.reliancedigital.in/api/service/application/catalog/v1.0"
 PROMO_URL = "https://www.reliancedigital.in/ext/raven-api/promotions"
@@ -131,6 +136,11 @@ def _is_handset(name: str) -> bool:
     return bool(re.search(pattern, name, re.I))
 
 
+def _is_excluded_color(name: str) -> bool:
+    name_lower = name.lower()
+    return any(re.search(rf"\b{re.escape(color)}\b", name_lower) for color in EXCLUDED_COLORS)
+
+
 def get_ist_now():
     return datetime.now(IST)
 
@@ -185,7 +195,8 @@ def search_handsets() -> List[Dict[str, Any]]:
         for p in items:
             name = (p.get("name") or "").strip()
             slug = p.get("slug")
-            if not slug or slug in seen or not _is_handset(name):
+            if (not slug or slug in seen or not _is_handset(name)
+                    or _is_excluded_color(name)):
                 continue
             seen[slug] = {
                 "name": name,
