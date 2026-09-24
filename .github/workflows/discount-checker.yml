@@ -318,14 +318,14 @@ jobs:
           python check_blinkit_amazon.py
         continue-on-error: true
 
-      - name: Check Reliance Digital iPhone 15/16/17 stock (560035)
+      - name: Check Reliance Digital iPhone 16/17 stock (560035)
         env:
           SENDER_EMAIL: ${{ secrets.SENDER_EMAIL }}
           RECEIVER_EMAIL: ${{ secrets.RECEIVER_EMAIL }}
           EMAIL_PASSWORD: ${{ secrets.EMAIL_PASSWORD }}
           NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
           RELIANCE_PINCODE: "560035"
-          RELIANCE_MODELS: "15,16,17"
+          RELIANCE_MODELS: "16,17"
           RELIANCE_COOLDOWN_HOURS: "0.0333"  # 2 minutes
         run: |
           python check_reliancedigital_iphone.py
