@@ -381,7 +381,7 @@ jobs:
           EMAIL_PASSWORD: ${{ secrets.EMAIL_PASSWORD }}
           NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
           CROMA_PINCODE: "560035,560048"
-          CROMA_MODELS: "15,16,17"
+          CROMA_MODELS: "16,17"
           # Empty = no discount gate; every watched model (15/16/17) alerts on stock alone.
           CROMA_DISCOUNT_MODELS: ""
           # Current Croma iPhone 17 new-price SKUs are monitored, but should only alert
