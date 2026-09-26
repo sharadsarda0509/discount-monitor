@@ -76,7 +76,7 @@ except ImportError:
 
 IST = timezone(timedelta(hours=5, minutes=30))
 COOLDOWN_HOURS = float(os.environ.get(
-    "CROMA_COOLDOWN_HOURS", os.environ.get("ALERT_COOLDOWN_HOURS", 0.5)))
+    "CROMA_COOLDOWN_HOURS", os.environ.get("ALERT_COOLDOWN_HOURS", 12)))
 STATE_DIR = Path(".alert_state")
 STATE_FILE = STATE_DIR / "last_alert.json"
 
