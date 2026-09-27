@@ -390,7 +390,8 @@ jobs:
           # Current Croma iPhone 17 new-price SKUs are monitored, but should only alert
           # when Croma has a real discount instead of stock-only availability.
           CROMA_DISCOUNT_SKUS: "324530,324462,324465,324468"
-          CROMA_COOLDOWN_HOURS: "12"
+          # Re-notify quickly when a Croma handset restocks; value is in hours.
+          CROMA_COOLDOWN_HOURS: "0.033333"
         run: |
           python check_croma_iphone.py
         continue-on-error: true
