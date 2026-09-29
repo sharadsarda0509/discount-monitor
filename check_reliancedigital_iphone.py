@@ -26,9 +26,9 @@ Handsets are discovered dynamically (not hardcoded), so a new model -- e.g. iPho
 -- is picked up the day it lands in the catalog, without any code change.
 
 Alert condition: a watched iPhone (15/16/17 base, no Pro/Pro Max; excluding the
-iPhone 15 Yellow variant) must be BOTH in stock at the pincode AND carry a qualifying
-offer -- either a non-EMI instant/bank offer, or a Kotak (RELIANCE_EMI_BANK) No-Cost
-EMI offer. Stock alone does not alert.
+iPhone 15 Yellow variant) is in stock and deliverable to the pincode. Offers are
+included in the alert when available, but are not required. iPhone 17 additionally
+requires a known selling price below Rs.99,900.
 """
 
 import os
@@ -39,6 +39,7 @@ import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from datetime import datetime, timezone, timedelta
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -294,8 +295,23 @@ def check_pincode_stock(handset: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     }
 
 
-# Bank whose No-Cost EMI offer also qualifies for an alert (in addition to non-EMI offers).
+# Bank whose No-Cost EMI offers are included alongside non-EMI offers.
 EMI_BANK = os.environ.get("RELIANCE_EMI_BANK", "KOTAK").upper()
+IPHONE_17_MAX_PRICE = Decimal("99900")
+
+
+def _selling_price(value: Any) -> Optional[Decimal]:
+    if value is None:
+        return None
+    try:
+        price = Decimal(str(value))
+    except InvalidOperation:
+        return None
+    return price if price.is_finite() and price > 0 else None
+
+
+def _price_label(price: Decimal) -> str:
+    return f"Rs.{price:.0f}" if price == price.to_integral_value() else f"Rs.{price:.2f}"
 
 
 def _bank_str(o: Dict[str, Any]) -> str:
@@ -306,7 +322,6 @@ def _bank_str(o: Dict[str, Any]) -> str:
 
 
 def _is_emi_offer(o: Dict[str, Any]) -> bool:
-    """An offer is EMI-based if its payment_method is EMI (or the desc says so)."""
     if str(o.get("payment_method") or "").upper() == "EMI":
         return True
     return "EMI" in str(o.get("offer_desc") or o.get("description") or "").upper()
@@ -319,7 +334,6 @@ def _is_nocost(o: Dict[str, Any]) -> bool:
 
 
 def _offer_label(o: Dict[str, Any]) -> str:
-    """Human label for an instant/bank offer."""
     desc = str(o.get("offer_desc") or o.get("description") or o.get("offer_code") or "Offer").strip()
     banks = o.get("bank_codes") or o.get("bank_code")
     if isinstance(banks, list):
@@ -333,20 +347,11 @@ def _offer_label(o: Dict[str, Any]) -> str:
     return " ".join(parts)
 
 
-def fetch_offers(article_id: str, slug: str) -> Dict[str, List[str]]:
-    """Return qualifying offers for a product, categorised.
-
-    Fynd's promotions API segregates offers:
-      - bank_offers / top_bank_offers / product_offers : instant offers (some EMI-linked)
-      - emi_data / top_emi_offers                       : per-bank EMI tenure plans
-
-    We return two buckets of human-readable labels:
-      - "non_emi"      : instant offers that are NOT EMI-based
-      - "kotak_nocost" : No-Cost EMI offers from EMI_BANK (default Kotak)
-    """
-    empty = {"non_emi": [], "kotak_nocost": []}
+def fetch_offers(article_id: str, slug: str) -> Optional[Dict[str, List[str]]]:
+    """Return non-EMI and selected No-Cost EMI offers, or None on lookup failure."""
     if not article_id:
-        return empty
+        print(f"[{get_ist_now()}] offers lookup unavailable for {slug}: missing article ID")
+        return None
     try:
         r = _get(PROMO_URL, params={"article-id": article_id, "slug": slug},
                  headers=HEADERS, timeout=30)
@@ -354,12 +359,10 @@ def fetch_offers(article_id: str, slug: str) -> Dict[str, List[str]]:
         data = (r.json() or {}).get("data") or {}
     except (requests.RequestException, ValueError) as e:
         print(f"[{get_ist_now()}] offers fetch failed for {slug}: {e}")
-        return empty
+        return None
 
     non_emi: Dict[str, str] = {}
     kotak_nocost: Dict[str, str] = {}
-
-    # 1) instant / bank offers
     for key in ("bank_offers", "top_bank_offers", "product_offers"):
         for o in (data.get(key) or []):
             if not isinstance(o, dict):
@@ -371,7 +374,6 @@ def fetch_offers(article_id: str, slug: str) -> Dict[str, List[str]]:
             else:
                 non_emi.setdefault(code, _offer_label(o))
 
-    # 2) EMI tenure plans (emi_data: card_name -> [plans]; top_emi_offers: dict or list)
     def _scan_plans(card: Any, plans: Any):
         card_u = str(card or "").upper()
         for p in (plans if isinstance(plans, list) else [plans]):
@@ -395,25 +397,32 @@ def _stock_lines(matches: List[Dict[str, Any]]) -> List[str]:
     lines = []
     for m in matches:
         price = ""
-        if m.get("effective"):
-            price = f" -- Rs.{float(m['effective']):.0f}"
-            if m.get("marked") and m["marked"] != m["effective"]:
-                price += f" (MRP Rs.{float(m['marked']):.0f})"
+        effective = _selling_price(m.get("effective"))
+        marked = _selling_price(m.get("marked"))
+        if effective is not None:
+            price = f" -- {_price_label(effective)}"
+            if marked is not None and marked != effective:
+                price += f" (MRP {_price_label(marked)})"
         lines.append(f"- {m['name']}{price}  [qty {m['qty']}]")
-        offers = m.get("offers") or {}
-        for lbl in offers.get("non_emi", []):
-            lines.append(f"    * non-EMI offer: {lbl}")
-        for lbl in offers.get("kotak_nocost", []):
-            lines.append(f"    * {EMI_BANK} No-Cost EMI: {lbl}")
+        offers = m.get("offers")
+        if offers is None:
+            lines.append("    * Offers unavailable (lookup failed)")
+        elif not offers["non_emi"] and not offers["kotak_nocost"]:
+            lines.append("    * No offer")
+        else:
+            for lbl in offers["non_emi"]:
+                lines.append(f"    * non-EMI offer: {lbl}")
+            for lbl in offers["kotak_nocost"]:
+                lines.append(f"    * {EMI_BANK} No-Cost EMI: {lbl}")
     return lines
 
 
 def send_alert(matches: List[Dict[str, Any]]) -> bool:
     models = models_summary(m["name"] for m in matches)
-    subject = f"Reliance Digital: {models} in stock + offer @ {PINCODE} -- {len(matches)} variant(s)"
-    title = f"{models} in stock + offer at Reliance Digital ({len(matches)})"
+    subject = f"Reliance Digital: {models} in stock @ {PINCODE} -- {len(matches)} variant(s)"
+    title = f"{models} in stock at Reliance Digital ({len(matches)})"
     body = "\n".join(
-        [f"iPhone in stock at {PINCODE} WITH a non-EMI / {EMI_BANK} No-Cost EMI offer on Reliance Digital:", ""]
+        [f"iPhone in stock at {PINCODE} on Reliance Digital:", ""]
         + _stock_lines(matches)
         + ["", f"Shop: {SEARCH_URL}apple%20iphone"]
     )
@@ -468,30 +477,29 @@ def check_reliancedigital_iphone():
     handsets = search_handsets()
     print(f"[{get_ist_now()}] {len(handsets)} handset(s) found in catalog")
 
-    # Alert only when a phone is BOTH in stock at the pincode AND has a qualifying offer:
-    # a non-EMI (instant) offer, OR a Kotak No-Cost EMI offer.
     matches: List[Dict[str, Any]] = []
     for h in handsets:
         info = check_pincode_stock(h)
         if not info:
             print(f"[{get_ist_now()}] {h['name']:45.45}  qty=0    out of stock")
             continue
+        price = _selling_price(info.get("effective"))
+        price_status = _price_label(price) if price is not None else "price unavailable"
+        if re.search(r"\biphone\s*17\b", h["name"], re.I) and (price is None or price >= IPHONE_17_MAX_PRICE):
+            print(f"[{get_ist_now()}] {h['name']:45.45}  qty={info['qty']:<4} IN STOCK ({price_status}) -- skipping (iPhone 17 requires price below Rs.99900)")
+            continue
         offers = fetch_offers(info.get("article_id", ""), info["slug"])
         info["offers"] = offers
-        n_ne, n_kn = len(offers["non_emi"]), len(offers["kotak_nocost"])
-        if n_ne or n_kn:
-            flag = f"IN STOCK + {n_ne} non-EMI, {n_kn} {EMI_BANK} no-cost EMI"
-        else:
-            flag = "IN STOCK (no qualifying offer)"
-        print(f"[{get_ist_now()}] {h['name']:45.45}  qty={info['qty']:<4} {flag}")
-        if n_ne or n_kn:
-            matches.append(info)
+        offer_status = ("offers unavailable" if offers is None else
+                        f"{len(offers['non_emi'])} non-EMI, {len(offers['kotak_nocost'])} {EMI_BANK} no-cost EMI")
+        print(f"[{get_ist_now()}] {h['name']:45.45}  qty={info['qty']:<4} IN STOCK ({price_status}; {offer_status})")
+        matches.append(info)
 
     if not matches:
-        print(f"[{get_ist_now()}] No in-stock iPhone with a qualifying offer at {PINCODE}.")
+        print(f"[{get_ist_now()}] No in-stock iPhone meeting alert criteria at {PINCODE}.")
         return False
 
-    print(f"[{get_ist_now()}] STOCK + QUALIFYING OFFER: {[m['name'] for m in matches]}")
+    print(f"[{get_ist_now()}] IN STOCK: {[m['name'] for m in matches]}")
     if not should_send_alert("reliance_iphone"):
         return False
 
