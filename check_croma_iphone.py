@@ -41,6 +41,8 @@ any fulfillment type. By default no discount is required -- every watched model 
 on stock alone. Any models listed in CROMA_DISCOUNT_MODELS or SKUs listed in
 CROMA_DISCOUNT_SKUS ADDITIONALLY require a real discount (selling price below MRP);
 an in-stock but full-MRP unit of a gated model/SKU is logged but not alerted.
+The four seeded iPhone 17 new-price SKUs also require a selling price strictly
+below Rs.95,000, regardless of discount-gate configuration.
 """
 
 import os
@@ -108,6 +110,8 @@ DISCOUNT_SKUS = {
     for s in os.environ.get("CROMA_DISCOUNT_SKUS", "324530,324462,324465,324468").split(",")
     if s.strip()
 }
+IPHONE17_NEW_PRICE_SKUS = {"324530", "324462", "324465", "324468"}
+IPHONE17_NEW_PRICE_LIMIT = 95000
 
 # Watched products: SKU -> {name, path}. Seeded with the base iPhone 15/16/17 colours
 # Croma lists today; search is Akamai-gated so SKUs can't be discovered headlessly, and
@@ -215,8 +219,14 @@ def _discount(product: Dict[str, Any]) -> Optional[Dict[str, float]]:
 
 
 def _passes_gate(product: Dict[str, Any]) -> bool:
-    """Discount-gated models/SKUs alert only when discounted; every other watched
-    handset alerts on stock alone."""
+    """Apply the new-SKU price ceiling and any configured discount requirement."""
+    if product.get("sku") in IPHONE17_NEW_PRICE_SKUS:
+        try:
+            price = float(product.get("price"))
+        except (TypeError, ValueError):
+            return False
+        if not 0 < price < IPHONE17_NEW_PRICE_LIMIT:
+            return False
     if product.get("sku") in DISCOUNT_SKUS or _model_num(product["name"]) in DISCOUNT_MODELS:
         return _discount(product) is not None
     return True
@@ -562,9 +572,12 @@ def check_croma_iphone():
             continue
         methods = sorted({f["method"] for f in info["fulfillments"] if f.get("method")})
         if not _passes_gate(info):
-            price = f"Rs.{float(info['price']):.0f}" if info.get("price") else "price n/a"
-            print(f"[{get_ist_now()}] {info['name']:45.45}  IN STOCK ({price} = full MRP) "
-                  f"-- skipping (discount-gated)")
+            reason = "discount required"
+            if info.get("sku") in IPHONE17_NEW_PRICE_SKUS:
+                reason = f"selling price must be below Rs.{IPHONE17_NEW_PRICE_LIMIT}; discount required if configured"
+            print(f"[{get_ist_now()}] {info['name']:45.45}  IN STOCK "
+                  f"(selling price: {info.get('price')}, MRP: {info.get('mrp')}) "
+                  f"-- skipping ({reason})")
             continue
         d = _discount(info)
         tag = f"save Rs.{d['amount']:.0f} / {d['pct']:.0f}%" if d else "stock-only"
@@ -572,7 +585,8 @@ def check_croma_iphone():
         matches.append(info)
 
     if not matches:
-        print(f"[{get_ist_now()}] No watched iPhone in stock at {', '.join(PINCODES)} on Croma.")
+        print(f"[{get_ist_now()}] No watched iPhone in stock meeting alert criteria "
+              f"at {', '.join(PINCODES)} on Croma.")
         return False
 
     print(f"[{get_ist_now()}] IN STOCK: {[m['name'] for m in matches]}")
