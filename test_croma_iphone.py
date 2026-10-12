@@ -5,12 +5,15 @@ import check_croma_iphone as monitor
 
 
 class CromaPriceGateTests(unittest.TestCase):
-    def test_new_skus_require_price_strictly_below_95000(self):
+    def test_new_skus_require_price_strictly_below_90000(self):
         for sku in monitor.IPHONE17_NEW_PRICE_SKUS:
             for price, expected in [
-                (94999, True),
-                (94999.99, True),
-                ("94999.99", True),
+                (89999, True),
+                (89999.99, True),
+                ("89999.99", True),
+                (90000, False),
+                (90000.01, False),
+                (94999, False),
                 (95000, False),
                 (95990, False),
                 (None, False),
@@ -49,11 +52,12 @@ class CromaPriceGateTests(unittest.TestCase):
                 with self.subTest(sku=sku):
                     self.assertFalse(monitor._passes_gate({
                         "sku": sku, "name": monitor._PRODUCTS[sku]["name"],
-                        "price": 94999, "mrp": 94999,
+                        "price": 89999, "mrp": 89999,
                     }))
 
     def test_monitor_only_sends_qualifying_products(self):
-        for price, expected in [(95990, False), (95000, False), (94999, True)]:
+        for price, expected in [(95990, False), (95000, False), (94999, False),
+                                (90000, False), (89999, True)]:
             with self.subTest(price=price):
                 product = {
                     "sku": "324530", "name": monitor._PRODUCTS["324530"]["name"],

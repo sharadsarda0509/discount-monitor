@@ -42,7 +42,7 @@ on stock alone. Any models listed in CROMA_DISCOUNT_MODELS or SKUs listed in
 CROMA_DISCOUNT_SKUS ADDITIONALLY require a real discount (selling price below MRP);
 an in-stock but full-MRP unit of a gated model/SKU is logged but not alerted.
 The four seeded iPhone 17 new-price SKUs also require a selling price strictly
-below Rs.95,000, regardless of discount-gate configuration.
+below Rs.90,000, regardless of discount-gate configuration.
 """
 
 import os
@@ -111,7 +111,7 @@ DISCOUNT_SKUS = {
     if s.strip()
 }
 IPHONE17_NEW_PRICE_SKUS = {"324530", "324462", "324465", "324468"}
-IPHONE17_NEW_PRICE_LIMIT = 95000
+IPHONE17_NEW_PRICE_LIMIT = 90000
 
 # Watched products: SKU -> {name, path}. Seeded with the base iPhone 15/16/17 colours
 # Croma lists today; search is Akamai-gated so SKUs can't be discovered headlessly, and
