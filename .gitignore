@@ -32,4 +32,4 @@ Thumbs.db
 
 # Test files
 test_*.py
-
+!test_bigbasket_iphone.py

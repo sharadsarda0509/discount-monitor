@@ -116,6 +116,21 @@ schedule:
 
 ## 🔍 Monitoring & Logs
 
+### BigBasket stock alerts
+
+`check_bigbasket_iphone.py` monitors base iPhone 15/16/17 handsets at
+`BIGBASKET_LAT` / `BIGBASKET_LON` (default pincode `560035`, configurable with
+`BIGBASKET_PINCODE`). Requests explicitly select the website's `bbnow` storefront
+with entry context `10`; location cookies alone are not sufficient to select it.
+Scrapfly, browser, and direct requests use the same storefront.
+
+Stock alerts require all three availability fields: `avail_status: "001"`,
+`button: "Add"`, and Boolean `not_for_sale: false`. Missing or contradictory
+availability cannot trigger an alert. Only search-result products are considered,
+not catalog variant/consolidated blocks. Invalid responses are logged as failed
+scans, not interpreted as an empty out-of-stock listing. Logs include the
+availability fields used for each handset's decision.
+
 ### View Logs
 
 1. Go to **Actions** tab in your repository
@@ -210,4 +225,3 @@ If you encounter issues:
 **Happy Shopping! 🛍️**
 
 *Last Updated: January 2026*
-

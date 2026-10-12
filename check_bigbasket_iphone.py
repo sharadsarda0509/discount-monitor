@@ -18,8 +18,8 @@ Flow per run:
   1. GET homepage  -> scrape the current Next.js buildId (changes each deploy)
   2. For each watched product (id + slug) -> GET the pd SSR json -> read availability
      (avail_status "001" = in stock / "Add"; "000" = out of stock / "Notify Me").
-     A not_for_sale flag can still be set on an avail_status "001" / "Add" item
-     (shown but not orderable at this location) -- that is treated as out of stock.
+     An alert requires avail_status "001", button "Add", and not_for_sale false.
+     Missing or contradictory availability is never treated as in stock.
 
 Discovery: base iPhone 15/16/17 SKUs are discovered dynamically each run from BigBasket's
 listing service (search "iphone"). The listing service is Akamai-gated but returns JSON
@@ -120,7 +120,35 @@ def _cookies() -> Dict[str, str]:
         "_bb_pin_code": PINCODE,
         "bb2_enabled": "true",
         "_bb_bb2.0": "1",
+        "x-channel": "web",
+        "xentrycontext": "bbnow",
+        "xentrycontextid": "10",
+        "jentrycontextid": "10",
     }
+
+
+def _api_headers(referer: str = HOME_URL) -> Dict[str, str]:
+    # Location cookies alone do not select the website's bbnow inventory context.
+    return {
+        "x-channel": "BB-WEB",
+        "x-entry-context": "bbnow",
+        "x-entry-context-id": "10",
+        "accept": "*/*",
+        "referer": referer,
+    }
+
+
+def _is_orderable(availability: Any) -> bool:
+    if (not isinstance(availability, dict)
+            or not availability.get("avail_status")
+            or not availability.get("button")
+            or not isinstance(availability.get("not_for_sale"), bool)):
+        print(f"[{get_ist_now()}] Availability incomplete or invalid -- stock unconfirmed: "
+              f"{availability!r}")
+        return False
+    return (availability["avail_status"] == "001"
+            and availability["button"] == "Add"
+            and availability["not_for_sale"] is False)
 
 
 def _products() -> List[Tuple[str, str]]:
@@ -241,7 +269,8 @@ def fetch_build_id() -> Optional[str]:
     # Broad except: curl_cffi raises its own HTTPError (not a requests.RequestException)
     # on the Akamai 403, so a narrow except would let it crash the whole run.
     try:
-        r = _get(HOME_URL, headers={"User-Agent": UA}, cookies=_cookies(), timeout=30)
+        r = _get(HOME_URL, headers={"User-Agent": UA, **_api_headers()},
+                 cookies=_cookies(), timeout=30)
         r.raise_for_status()
         return _extract_build_id(r.text)
     except Exception as e:
@@ -263,8 +292,7 @@ def discover_products(max_pages: int = 5) -> List[Tuple[str, str]]:
         try:
             r = _get(LISTING_URL,
                      params={"type": "ps", "slug": SEARCH_TERM, "page": str(page)},
-                     headers={"User-Agent": UA, "x-channel": "BB-WEB", "accept": "*/*",
-                              "referer": PRODUCT_PAGE},
+                     headers={"User-Agent": UA, **_api_headers(PRODUCT_PAGE)},
                      cookies=_cookies(), timeout=30)
             if r.status_code != 200:
                 break
@@ -316,7 +344,7 @@ def _find_product(node: Any, pid: str) -> Optional[Dict[str, Any]]:
 def check_product(build_id: str, pid: str, slug: str) -> Optional[Dict[str, Any]]:
     url = (f"https://www.bigbasket.com/_next/data/{build_id}/pd/{pid}/{slug}.json"
            f"?params={pid}&params={slug}")
-    headers = {"User-Agent": UA, "x-channel": "BB-WEB", "accept": "*/*", "referer": HOME_URL}
+    headers = {"User-Agent": UA, **_api_headers()}
     r = None
     for attempt in range(PD_MAX_RETRIES + 1):
         try:
@@ -361,9 +389,7 @@ def _parse_pd(pid: str, slug: str, data: Any) -> Optional[Dict[str, Any]]:
     # BigBasket sometimes returns avail_status "001" / button "Add" for an item flagged
     # not_for_sale -- displayed at this location but not actually orderable. That combo
     # produced false "in stock" alerts (e.g. iPhone 15 Blue), so not_for_sale gates it too.
-    in_stock = (str(av.get("avail_status")) == "001"
-                and av.get("button") != "Notify Me"
-                and not av.get("not_for_sale"))
+    in_stock = _is_orderable(av)
     return {
         "id": pid,
         "name": name,
@@ -448,12 +474,11 @@ def _browser_discover() -> Tuple[Optional[str], Dict[str, str]]:
     """One Scraping Browser session: fetch the homepage (-> buildId) and the first
     DISCOVER_PAGES listing-svc pages (-> discovered SKUs), with the location cookie seeded.
     Returns (build_id, {id: slug}) with the seeded fallback list merged in."""
-    calls = [{"url": HOME_URL, "headers": {"User-Agent": UA}}]
+    calls = [{"url": HOME_URL, "headers": {"User-Agent": UA, **_api_headers()}}]
     for page in range(1, DISCOVER_PAGES + 1):
         calls.append({
             "url": f"{LISTING_URL}?type=ps&slug={SEARCH_TERM}&page={page}",
-            "headers": {"User-Agent": UA, "x-channel": "BB-WEB", "accept": "*/*",
-                        "referer": PRODUCT_PAGE},
+            "headers": {"User-Agent": UA, **_api_headers(PRODUCT_PAGE)},
         })
     resp = brightdata_browser.browser_fetch(HOME_URL, calls, set_cookies=_browser_cookies()) or []
 
@@ -481,7 +506,7 @@ def _browser_check(build_id: str, products: Dict[str, str]) -> List[Dict[str, An
     calls = [{
         "url": (f"https://www.bigbasket.com/_next/data/{build_id}/pd/{pid}/{slug}.json"
                 f"?params={pid}&params={slug}"),
-        "headers": {"User-Agent": UA, "x-channel": "BB-WEB", "accept": "*/*", "referer": HOME_URL},
+        "headers": {"User-Agent": UA, **_api_headers()},
     } for pid, slug in items]
     resp = brightdata_browser.browser_fetch(HOME_URL, calls, set_cookies=_browser_cookies()) or []
 
@@ -502,9 +527,8 @@ def _browser_check(build_id: str, products: Dict[str, str]) -> List[Dict[str, An
 
 
 # --- Scrapfly path (Akamai-beating, browserless via api.scrapfly.io) ----------------
-# listing-svc returns every listed iPhone -- across the tabs + variant/consolidated
-# blocks -- with its per-location availability (avail_status / button / not_for_sale)
-# in ONE call, so a single Scrapfly call per page covers the whole watch-list. Pages
+# Only listing-svc's search-result tabs carry stock evidence; variant/consolidated
+# blocks must not be used. One Scrapfly call per page covers the watch-list. Pages
 # default to 1 to conserve credits (asp residential calls are ~25 credits each).
 SCRAPFLY_LISTING_PAGES = int(os.environ.get("BIGBASKET_LISTING_PAGES", 1))
 # listing-svc intermittently 404s with a transient backend error (PL5012 "please try
@@ -519,9 +543,16 @@ def _listing_products(data: Any) -> List[Dict[str, Any]]:
     payload expose a catalog-level avail_status that falsely reads "001"/in-stock even when
     the item is OOS at the pincode -- so we deliberately do NOT walk those (verified: a
     recursive walk produced false 'in stock' for 560035 while product_info showed OOS)."""
+    if not isinstance(data, dict) or not isinstance(data.get("tabs"), list):
+        raise ValueError("missing or invalid search-result tabs")
     out: List[Dict[str, Any]] = []
-    for t in (data.get("tabs") or []):
-        out.extend((t.get("product_info") or {}).get("products") or [])
+    for t in data["tabs"]:
+        if not isinstance(t, dict) or not isinstance(t.get("product_info"), dict):
+            raise ValueError("missing or invalid search-result product_info")
+        products = t["product_info"].get("products")
+        if not isinstance(products, list) or any(not isinstance(p, dict) for p in products):
+            raise ValueError("missing or invalid search-result products")
+        out.extend(products)
     return out
 
 
@@ -539,14 +570,15 @@ def _listing_price(p: Dict[str, Any]) -> Dict[str, Optional[float]]:
 def _scrapfly_scan() -> Optional[List[Dict[str, Any]]]:
     """Fetch listing-svc via Scrapfly (asp clears Akamai, _bb_lat_long cookie pins the
     location) and return info dicts for every watched base handset. Returns None only if
-    every key failed for every page (so the caller can log/abort rather than false 'OOS')."""
+    no page returned valid search results (so failure is not reported as 'OOS')."""
     products: Dict[str, Dict[str, Any]] = {}
     any_ok = False
     for page in range(1, SCRAPFLY_LISTING_PAGES + 1):
         url = f"{LISTING_URL}?type=ps&slug={SEARCH_TERM}&page={page}"
         res = {"status": 0}
         for attempt in range(SCRAPFLY_RETRIES + 1):
-            res = scrapfly_reader.fetch(url, cookies=_cookies())
+            res = scrapfly_reader.fetch(url, cookies=_cookies(),
+                                       headers=_api_headers(PRODUCT_PAGE))
             if res.get("status") == 200:
                 break
             print(f"[{get_ist_now()}] scrapfly listing page {page} attempt "
@@ -555,12 +587,14 @@ def _scrapfly_scan() -> Optional[List[Dict[str, Any]]]:
                 time.sleep(2)  # fresh IP next attempt clears the transient PL5012
         if res.get("status") != 200:
             continue
-        any_ok = True
         try:
-            for p in _listing_products(json.loads(res.get("text") or "{}")):
-                products.setdefault(str(p.get("id") or p.get("desc")), p)
+            page_products = _listing_products(json.loads(res.get("text") or ""))
         except ValueError as e:
-            print(f"[{get_ist_now()}] scrapfly listing page {page} bad json: {e}")
+            print(f"[{get_ist_now()}] scrapfly listing page {page} invalid response: {e}")
+            continue
+        any_ok = True
+        for p in page_products:
+            products.setdefault(str(p.get("id") or p.get("desc")), p)
     if not any_ok:
         return None
     infos: List[Dict[str, Any]] = []
@@ -577,10 +611,7 @@ def _scrapfly_scan() -> Optional[List[Dict[str, Any]]]:
             "label": av.get("label"), "not_for_sale": av.get("not_for_sale"),
             "sp": pr["price"], "mrp": pr["mrp"],
             "url": ("https://www.bigbasket.com" + url) if url else PRODUCT_PAGE,
-            # Same gate as the pd path: listed in stock, not a "Notify Me", orderable here.
-            "in_stock": (str(av.get("avail_status")) == "001"
-                         and av.get("button") != "Notify Me"
-                         and not av.get("not_for_sale")),
+            "in_stock": _is_orderable(av),
         })
     return infos
 
@@ -594,6 +625,7 @@ def check_bigbasket_iphone():
     print(f"BigBasket iPhone monitor -- {get_ist_now()}")
     print(f"Location: lat={LAT}, lon={LON} (pin {PINCODE})   Models: {', '.join(MODELS)}")
     print(f"Source: {source}")
+    print("Storefront: bbnow (entry context 10)")
     print("=" * 60)
 
     # Both paid paths (Scrapfly credits / BD credits) throttle to conserve budget.
@@ -604,7 +636,7 @@ def check_bigbasket_iphone():
         infos = _scrapfly_scan()
         _mark_scraped()  # count the credit spend against the throttle even if it fails
         if infos is None:
-            print(f"[{get_ist_now()}] All Scrapfly keys failed -- aborting this run.")
+            print(f"[{get_ist_now()}] No valid Scrapfly listing response -- aborting this run.")
             return False
         print(f"[{get_ist_now()}] watching {len(infos)} listed handset(s)")
     elif use_browser:
@@ -641,7 +673,9 @@ def check_bigbasket_iphone():
         else:
             reason = "not for sale" if info.get("not_for_sale") else (info.get("label") or info.get("button"))
             status = f"out of stock ({reason})"
-        print(f"[{get_ist_now()}] {info['name']:40.40}  {status}")
+        print(f"[{get_ist_now()}] {info['name']:40.40}  {status} "
+              f"(avail_status={info.get('avail_status')!r}, button={info.get('button')!r}, "
+              f"not_for_sale={info.get('not_for_sale')!r})")
         if info["in_stock"]:
             in_stock.append(info)
 
