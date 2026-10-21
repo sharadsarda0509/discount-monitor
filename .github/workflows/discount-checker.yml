@@ -99,6 +99,17 @@ jobs:
           python check_bitvalve.py
         continue-on-error: true
 
+      - name: Check Equitas Amazon Pay Rs.5000/10000 voucher stock
+        env:
+          SENDER_EMAIL: ${{ secrets.SENDER_EMAIL }}
+          RECEIVER_EMAIL: ${{ secrets.RECEIVER_EMAIL }}
+          EMAIL_PASSWORD: ${{ secrets.EMAIL_PASSWORD }}
+          NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
+          ALERT_COOLDOWN_HOURS: "24"
+        run: |
+          python check_equitas_giftcard.py
+        continue-on-error: true
+
       - name: Check Amazon Pay gift card upfront discount (dynamic discovery)
         env:
           SENDER_EMAIL: ${{ secrets.SENDER_EMAIL }}

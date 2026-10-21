@@ -11,6 +11,7 @@ ENV/
 
 # State files
 last_alert.json
+.alert_state/equitas_public_client.json
 
 # IDE
 .vscode/
@@ -33,3 +34,4 @@ Thumbs.db
 # Test files
 test_*.py
 !test_bigbasket_iphone.py
+!test_equitas_giftcard.py
